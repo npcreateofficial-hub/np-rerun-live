@@ -308,6 +308,7 @@ function showItemFromBody(body: z.infer<typeof showItemSchema>): ShopeeBasketIte
 }
 
 const productDetailsSchema = z.object({
+  cookie: z.string().nullish(),
   productUrl: z.string().nullish(),
   productUrls: z.array(z.string()).optional(),
   shopId: z.union([z.string(), z.number()]).nullish(),
@@ -372,6 +373,8 @@ liveChannelsRouter.post(
   asyncHandler(async (req: AuthedRequest, res) => {
     const channel = await ownedChannel(req.userId!, req.params.id);
     requireShopeeCookie(channel);
+    const body = productDetailsSchema.parse(req.body);
+    const cookie = body.cookie?.trim() || channel.cookie!;
     let sessionId = parseShopeeLiveSessionId(channel.liveSessionId ?? null);
     if (!sessionId) {
       const liveChannel = await prisma.liveChannel.findFirst({
@@ -392,10 +395,15 @@ liveChannelsRouter.post(
       });
       sessionId = parseShopeeLiveSessionId(liveChannel?.liveSessionId ?? null);
     }
-    const body = productDetailsSchema.parse(req.body);
     const { items, links } = productDetailsInputFromBody(body);
     if (!items.length && !links.length) throw new AppError('กรุณาส่งลิงก์สินค้า หรือ shopId/itemId หรือ items', 400);
-    const result = await shopee.productScreenRankings(channel.cookie!, sessionId, items, links);
+    const result = await shopee.productScreenRankings(cookie, sessionId, items, links, {
+      sessionId,
+      channelName: channel.name,
+      accountName: channel.accountName,
+      platformUid: channel.platformUid,
+      shopId: channel.shopId,
+    });
     return ok(res, result, 'โหลดอันดับจอ Shopee สำเร็จ');
   }),
 );

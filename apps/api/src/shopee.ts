@@ -192,6 +192,15 @@ export type ShopeeScreenRankingsResult = {
   items: ShopeeScreenRankingItem[];
 };
 
+export type ShopeeScreenRankingTarget = {
+  sessionId?: string | null;
+  channelName?: string | null;
+  accountName?: string | null;
+  username?: string | null;
+  platformUid?: string | null;
+  shopId?: string | number | null;
+};
+
 export type ShopeePinBasketItemsResult = {
   sessionId: string;
   pinned: number;
@@ -5223,10 +5232,108 @@ function readRankingMetrics(recommendationInfo: unknown): Pick<ShopeeScreenRanki
   };
 }
 
+function normalizeRankingText(value: unknown): string {
+  return String(value ?? '').trim().toLowerCase();
+}
+
+function collectScreenRankingTargetValues(target?: ShopeeScreenRankingTarget | null): Set<string> {
+  const values = new Set<string>();
+  if (!target) return values;
+  for (const value of [
+    target.sessionId,
+    target.channelName,
+    target.accountName,
+    target.username,
+    target.platformUid,
+    target.shopId,
+  ]) {
+    const normalized = normalizeRankingText(value);
+    if (normalized) values.add(normalized);
+  }
+  return values;
+}
+
+function collectSessionInfoValues(entry: any): Set<string> {
+  const values = new Set<string>();
+  const add = (value: unknown) => {
+    const normalized = normalizeRankingText(value);
+    if (normalized) values.add(normalized);
+  };
+
+  for (const value of [
+    entry?.session_id,
+    entry?.sessionId,
+    entry?.streamer_shop_id,
+    entry?.streamerShopId,
+    entry?.shop_id,
+    entry?.shopid,
+    entry?.shopId,
+    entry?.uid,
+    entry?.user_id,
+    entry?.userId,
+    entry?.userid,
+    entry?.username,
+    entry?.user_name,
+    entry?.nickname,
+    entry?.display_name,
+    entry?.displayName,
+    entry?.name,
+    entry?.shop_name,
+    entry?.shopName,
+    entry?.account_name,
+    entry?.accountName,
+    entry?.streamer_name,
+    entry?.streamerName,
+    entry?.streamer_username,
+    entry?.streamerUsername,
+    entry?.streamer_nickname,
+    entry?.streamerNickname,
+    entry?.seller?.username,
+    entry?.seller?.nickname,
+    entry?.seller?.shop_name,
+    entry?.seller?.shopid,
+    entry?.shop?.username,
+    entry?.shop?.nickname,
+    entry?.shop?.name,
+    entry?.shop?.shop_name,
+    entry?.shop?.shopid,
+    entry?.user?.username,
+    entry?.user?.nickname,
+    entry?.user?.name,
+    entry?.user_info?.username,
+    entry?.user_info?.nickname,
+    entry?.userInfo?.username,
+    entry?.userInfo?.nickname,
+  ]) add(value);
+
+  return values;
+}
+
+function findScreenRankingMatchIndex(
+  sessions: any[],
+  liveSessionId: string | null,
+  target?: ShopeeScreenRankingTarget | null,
+): number {
+  const targetValues = collectScreenRankingTargetValues({
+    ...target,
+    sessionId: target?.sessionId || liveSessionId,
+  });
+  if (!targetValues.size) return -1;
+
+  return sessions.findIndex((entry: any) => {
+    const values = collectSessionInfoValues(entry);
+    for (const targetValue of targetValues) {
+      if (values.has(targetValue)) return true;
+    }
+    return false;
+  });
+}
+
 function normalizeScreenRankingItem(
   item: ShopeeBasketItem,
   url: string,
   liveSessionId: string | null,
+  target: ShopeeScreenRankingTarget | null,
   payload: Record<string, any> | null,
   error: string | null,
 ): ShopeeScreenRankingItem {
@@ -5234,9 +5341,7 @@ function normalizeScreenRankingItem(
     ? payload?.shop_detailed?.session_infos
     : [];
   const wantedSession = liveSessionId ? String(liveSessionId) : null;
-  const matchedIndex = wantedSession
-    ? sessions.findIndex((entry: any) => String(entry?.session_id ?? entry?.sessionId ?? '') === wantedSession)
-    : -1;
+  const matchedIndex = findScreenRankingMatchIndex(sessions, wantedSession, target);
   const matched = matchedIndex >= 0 ? sessions[matchedIndex] : null;
   const first = matched || sessions[0] || null;
   const tc = readTcLevel(first?.session_url || first?.play_url || '');
@@ -5337,6 +5442,7 @@ async function liveProductScreenRankings(
   liveSessionId: string | null,
   items: ShopeeBasketItem[],
   links: string[] = [],
+  target: ShopeeScreenRankingTarget | null = null,
 ): Promise<ShopeeScreenRankingsResult> {
   const cleanItems = dedupeShopeeBasketItems(items).slice(0, 200);
   const cleanLinks = links.map((link) => String(link || '').trim()).filter(Boolean).slice(0, 200);
@@ -5395,33 +5501,18 @@ async function liveProductScreenRankings(
         sessionId = null;
       }
     }
-    if (!sessionId) {
-      return {
-        sessionId: null,
-        items: dedupeShopeeBasketItems(resolvedItems).map((item) =>
-          normalizeScreenRankingItem(
-            item,
-            item.url || `https://shopee.co.th/product/${item.shop_id}/${item.item_id}`,
-            null,
-            null,
-            null,
-          ),
-        ),
-      };
-    }
-
     const results: ShopeeScreenRankingItem[] = [];
     for (const item of dedupeShopeeBasketItems(resolvedItems)) {
       const url = item.url || `https://shopee.co.th/product/${item.shop_id}/${item.item_id}`;
       if (!Number(item.shop_id) || !Number(item.item_id)) {
-        results.push(normalizeScreenRankingItem(item, url, sessionId, null, 'แปลงลิงก์นี้เป็นสินค้า Shopee ไม่ได้'));
+        results.push(normalizeScreenRankingItem(item, url, sessionId, target, null, 'แปลงลิงก์นี้เป็นสินค้า Shopee ไม่ได้'));
         continue;
       }
       try {
         const detail = await fetchShopeePdpRankingViaPageContext(client, item, url, cookie);
-        results.push(normalizeScreenRankingItem(item, url, sessionId, detail, null));
+        results.push(normalizeScreenRankingItem(item, url, sessionId, target, detail, null));
       } catch (err) {
-        results.push(normalizeScreenRankingItem(item, url, sessionId, null, cleanShopeeRuntimeErrorText(err instanceof Error ? err.message : String(err))));
+        results.push(normalizeScreenRankingItem(item, url, sessionId, target, null, cleanShopeeRuntimeErrorText(err instanceof Error ? err.message : String(err))));
       }
     }
     return { sessionId, items: results };
@@ -6126,8 +6217,8 @@ export const shopee = {
     return liveProductDetails(cookie, liveSessionId, items, links);
   },
 
-  productScreenRankings(cookie: string, liveSessionId: string | null, items: ShopeeBasketItem[], links: string[] = []) {
-    return liveProductScreenRankings(cookie, liveSessionId, items, links);
+  productScreenRankings(cookie: string, liveSessionId: string | null, items: ShopeeBasketItem[], links: string[] = [], target: ShopeeScreenRankingTarget | null = null) {
+    return liveProductScreenRankings(cookie, liveSessionId, items, links, target);
   },
 
   createSession(
