@@ -431,9 +431,54 @@ liveChannelsRouter.post(
     const body = sessionItemsSchema.parse(req.body);
     const sessionId = parseShopeeLiveSessionId(body.sessionId ?? body.liveUrl ?? channel.liveSessionId ?? null);
     if (!sessionId) throw new AppError('กรุณาระบุ Session ID สำหรับดึงสินค้าในไลฟ์', 400);
-    const cookie = body.cookie?.trim() || channel.cookie!;
-    const result = await shopee.basketItems(cookie, sessionId);
-    return ok(res, result, 'โหลดสินค้าในไลฟ์จาก session สำเร็จ');
+    const primaryCookie = body.cookie?.trim() || channel.cookie!;
+    let lastError: unknown = null;
+    let result = await shopee.basketItems(primaryCookie, sessionId).catch((error) => {
+      lastError = error;
+      return null;
+    });
+
+    if (!result?.items?.length) {
+      const fallbackChannels = await prisma.liveChannel.findMany({
+        where: {
+          userId: req.userId!,
+          platform: 'SHOPEE',
+          cookie: { not: null },
+          id: { not: channel.id },
+        },
+        orderBy: [
+          { isOnline: 'desc' },
+          { updatedAt: 'desc' },
+        ],
+        take: 8,
+      });
+
+      for (const fallbackChannel of fallbackChannels) {
+        if (!fallbackChannel.cookie) continue;
+        const fallbackResult = await shopee.basketItems(fallbackChannel.cookie, sessionId).catch((error) => {
+          lastError = error;
+          return null;
+        });
+        if (fallbackResult?.items?.length) {
+          result = {
+            ...fallbackResult,
+            raw: {
+              source: 'fallback-channel-cookie',
+              channelId: fallbackChannel.id,
+              accountName: fallbackChannel.accountName ?? fallbackChannel.name,
+              raw: fallbackResult.raw,
+            },
+          };
+          break;
+        }
+      }
+    }
+
+    if (!result) {
+      throw lastError instanceof Error ? lastError : new AppError('โหลดสินค้าในไลฟ์จาก session ไม่สำเร็จ', 502);
+    }
+
+    return ok(res, result, result.items.length ? 'โหลดสินค้าในไลฟ์จาก session สำเร็จ' : 'ไม่พบสินค้าใน session นี้');
   }),
 );
 
