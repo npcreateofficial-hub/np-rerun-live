@@ -169,6 +169,29 @@ export type ShopeeBasketItemsResult = {
   raw?: unknown;
 };
 
+export type ShopeeScreenRankingItem = {
+  shopId: number;
+  itemId: number;
+  url: string;
+  screenRank: number | null;
+  screenRankLabel: string;
+  rankingType: string | null;
+  score: number | null;
+  ctr: number | null;
+  cvr: number | null;
+  viewCount: number | null;
+  liveSessionId: string | null;
+  matched: boolean;
+  sessionCount: number;
+  previewImage?: string | null;
+  error?: string | null;
+};
+
+export type ShopeeScreenRankingsResult = {
+  sessionId: string | null;
+  items: ShopeeScreenRankingItem[];
+};
+
 export type ShopeePinBasketItemsResult = {
   sessionId: string;
   pinned: number;
@@ -5160,6 +5183,184 @@ async function fetchShopeePdpDetailViaPageContext(
   return result.result?.value || null;
 }
 
+function readTcLevel(value: unknown): { rank: number | null; type: string | null } {
+  if (typeof value !== 'string' || !value.trim()) return { rank: null, type: null };
+  let tcLevel = '';
+  try {
+    const parsed = new URL(value);
+    tcLevel = parsed.searchParams.get('tcLevel') || '';
+  } catch {
+    const match = value.match(/[?&]tcLevel=([^&#]+)/i);
+    tcLevel = match?.[1] ? decodeURIComponent(match[1]) : value;
+  }
+  const parts = tcLevel.split(',').map((part) => part.trim()).filter(Boolean);
+  let rank: number | null = null;
+  let type: string | null = null;
+  for (const part of parts) {
+    const rankMatch = part.match(/^rank_(\d+(?:\.\d+)?)$/i);
+    if (rankMatch) {
+      const parsedRank = Number(rankMatch[1]);
+      if (Number.isFinite(parsedRank)) rank = parsedRank;
+      continue;
+    }
+    if (!type && /^[a-z]+$/i.test(part)) type = part.toUpperCase();
+  }
+  return { rank, type };
+}
+
+function readRankingMetrics(recommendationInfo: unknown): Pick<ShopeeScreenRankingItem, 'score' | 'ctr' | 'cvr'> {
+  const text = typeof recommendationInfo === 'string' ? recommendationInfo : '';
+  const read = (pattern: RegExp, multiplier: number) => {
+    const match = text.match(pattern);
+    if (!match) return null;
+    const value = Number(match[1]);
+    return Number.isFinite(value) ? Number((value * multiplier).toFixed(2)) : null;
+  };
+  return {
+    score: read(/(?:^|[|,])rule_engine=([0-9.]+)/i, 10_000),
+    ctr: read(/RNKMOD:ctr=([0-9.]+)/i, 100),
+    cvr: read(/(?:^|[|,])cvr=([0-9.]+)/i, 100),
+  };
+}
+
+function normalizeScreenRankingItem(
+  item: ShopeeBasketItem,
+  url: string,
+  liveSessionId: string | null,
+  payload: Record<string, any> | null,
+  error: string | null,
+): ShopeeScreenRankingItem {
+  const sessions = Array.isArray(payload?.shop_detailed?.session_infos)
+    ? payload?.shop_detailed?.session_infos
+    : [];
+  const wantedSession = liveSessionId ? String(liveSessionId) : null;
+  const matchedIndex = wantedSession
+    ? sessions.findIndex((entry: any) => String(entry?.session_id ?? entry?.sessionId ?? '') === wantedSession)
+    : -1;
+  const matched = matchedIndex >= 0 ? sessions[matchedIndex] : null;
+  const first = matched || sessions[0] || null;
+  const tc = readTcLevel(first?.session_url || first?.play_url || '');
+  const metrics = readRankingMetrics(first?.recommendation_info);
+  const screenRank = matchedIndex >= 0 ? matchedIndex + 1 : tc.rank;
+  const matchedCurrentLive = matchedIndex >= 0;
+  return {
+    shopId: Number(item.shop_id) || 0,
+    itemId: Number(item.item_id) || 0,
+    url,
+    screenRank: matchedCurrentLive ? matchedIndex + 1 : null,
+    screenRankLabel: error
+      ? 'เช็กไม่ได้'
+      : matchedCurrentLive
+        ? `อันดับ ${matchedIndex + 1}`
+        : screenRank
+          ? `มีจออื่น #${screenRank}`
+          : 'ไม่ติดจอ',
+    rankingType: tc.type,
+    score: metrics.score,
+    ctr: metrics.ctr,
+    cvr: metrics.cvr,
+    viewCount: pickNumber(first?.view_count, first?.viewer_count, first?.views),
+    liveSessionId: wantedSession,
+    matched: matchedCurrentLive,
+    sessionCount: sessions.length,
+    previewImage: first?.preview_image || first?.cover_pic || first?.cover || null,
+    error,
+  };
+}
+
+async function fetchShopeePdpRankingViaPageContext(
+  client: CdpClient,
+  item: ShopeeBasketItem,
+  url: string,
+): Promise<Record<string, any> | null> {
+  const shopId = Number(item.shop_id);
+  const itemId = Number(item.item_id);
+  if (!Number.isSafeInteger(shopId) || !Number.isSafeInteger(itemId) || shopId <= 0 || itemId <= 0) return null;
+
+  await navigateCdp(client, url || `https://shopee.co.th/product/${shopId}/${itemId}`, 1_200);
+  const response = await pageContextFetchUrl(
+    client,
+    `https://shopee.co.th/api/v4/pdp/get_pc?shop_id=${encodeURIComponent(String(shopId))}&item_id=${encodeURIComponent(String(itemId))}&tz_offset_minutes=420&detail_level=2`,
+    {
+      headers: {
+        'x-api-source': 'pc',
+        'x-requested-with': 'XMLHttpRequest',
+        referer: url || `https://shopee.co.th/product/${shopId}/${itemId}`,
+      },
+      timeoutMs: 12_000,
+    },
+  );
+  assertShopeePageOk(response.json, 'screen ranking detail');
+  return (dataOf(unwrapShopeeTuple(response.json)) || response.json?.data || response.json) as Record<string, any> | null;
+}
+
+async function liveProductScreenRankings(
+  cookie: string,
+  liveSessionId: string | null,
+  items: ShopeeBasketItem[],
+  links: string[] = [],
+): Promise<ShopeeScreenRankingsResult> {
+  const cleanItems = dedupeShopeeBasketItems(items).slice(0, 200);
+  const cleanLinks = links.map((link) => String(link || '').trim()).filter(Boolean).slice(0, 200);
+  if (!cleanItems.length && !cleanLinks.length) throw new AppError('ไม่มีสินค้าที่ต้องเช็กอันดับจอ', 400);
+
+  if (!config.shopeeLiveMode) {
+    return {
+      sessionId: liveSessionId,
+      items: cleanItems.map((item, index) => ({
+        shopId: Number(item.shop_id) || 0,
+        itemId: Number(item.item_id) || 0,
+        url: item.url || `https://shopee.co.th/product/${item.shop_id}/${item.item_id}`,
+        screenRank: index + 1,
+        screenRankLabel: `อันดับ ${index + 1}`,
+        rankingType: 'MOCK',
+        score: null,
+        ctr: null,
+        cvr: null,
+        viewCount: null,
+        liveSessionId,
+        matched: true,
+        sessionCount: cleanItems.length,
+      })),
+    };
+  }
+
+  return withShopeeChromeTarget(async (client) => {
+    await setShopeeCookiesInChrome(client, cookie);
+    await navigateCdp(client, 'https://shopee.co.th/', 1_200);
+
+    const resolvedItems: ShopeeBasketItem[] = [...cleanItems];
+    for (const link of cleanLinks) {
+      if (resolvedItems.some((item) => item.url === link)) continue;
+      const parsed = productPairFromUrl(link);
+      let resolved = parsed;
+      if (!resolved && isShopeeShortLink(link)) {
+        const expandedUrl = (await fetchShopeeRedirectUrl(link, 'HEAD')) || (await fetchShopeeRedirectUrl(link, 'GET'));
+        resolved = expandedUrl ? productPairFromUrl(expandedUrl) : null;
+      }
+      if (!resolved) resolved = await resolveShopeeLinkViaBrowserContext(client, link).catch(() => null);
+      resolvedItems.push(resolved ? { ...resolved, url: link } : { shop_id: 0, item_id: 0, url: link });
+    }
+
+    const sessionId = liveSessionId?.trim() || null;
+    const results: ShopeeScreenRankingItem[] = [];
+    for (const item of dedupeShopeeBasketItems(resolvedItems)) {
+      const url = item.url || `https://shopee.co.th/product/${item.shop_id}/${item.item_id}`;
+      if (!Number(item.shop_id) || !Number(item.item_id)) {
+        results.push(normalizeScreenRankingItem(item, url, sessionId, null, 'แปลงลิงก์นี้เป็นสินค้า Shopee ไม่ได้'));
+        continue;
+      }
+      try {
+        const detail = await fetchShopeePdpRankingViaPageContext(client, item, url);
+        results.push(normalizeScreenRankingItem(item, url, sessionId, detail, null));
+      } catch (err) {
+        results.push(normalizeScreenRankingItem(item, url, sessionId, null, cleanShopeeRuntimeErrorText(err instanceof Error ? err.message : String(err))));
+      }
+    }
+    return { sessionId, items: results };
+  });
+}
+
 async function liveProductDetails(
   cookie: string,
   liveSessionId: string | null,
@@ -5856,6 +6057,10 @@ export const shopee = {
 
   productDetails(cookie: string, liveSessionId: string | null, items: ShopeeBasketItem[], links: string[] = []) {
     return liveProductDetails(cookie, liveSessionId, items, links);
+  },
+
+  productScreenRankings(cookie: string, liveSessionId: string | null, items: ShopeeBasketItem[], links: string[] = []) {
+    return liveProductScreenRankings(cookie, liveSessionId, items, links);
   },
 
   createSession(

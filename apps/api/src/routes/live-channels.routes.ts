@@ -366,6 +366,20 @@ liveChannelsRouter.post(
     return ok(res, result, 'โหลดรายละเอียดสินค้า Shopee สำเร็จ');
   }),
 );
+
+liveChannelsRouter.post(
+  '/:id/screen-rankings',
+  asyncHandler(async (req: AuthedRequest, res) => {
+    const channel = await ownedChannel(req.userId!, req.params.id);
+    requireShopeeCookie(channel);
+    const sessionId = parseShopeeLiveSessionId(channel.liveSessionId ?? null);
+    const body = productDetailsSchema.parse(req.body);
+    const { items, links } = productDetailsInputFromBody(body);
+    if (!items.length && !links.length) throw new AppError('กรุณาส่งลิงก์สินค้า หรือ shopId/itemId หรือ items', 400);
+    const result = await shopee.productScreenRankings(channel.cookie!, sessionId, items, links);
+    return ok(res, result, 'โหลดอันดับจอ Shopee สำเร็จ');
+  }),
+);
 liveChannelsRouter.get(
   '/:id/basket-items',
   asyncHandler(async (req: AuthedRequest, res) => {

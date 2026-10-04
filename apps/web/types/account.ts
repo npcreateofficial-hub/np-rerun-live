@@ -249,6 +249,29 @@ export type ShopeeProductDetailsResult = {
   sessionId: string | null;
   items: ShopeeProductDetail[];
 };
+
+export type ShopeeScreenRankingItem = {
+  shopId: number;
+  itemId: number;
+  url: string;
+  screenRank: number | null;
+  screenRankLabel: string;
+  rankingType: string | null;
+  score: number | null;
+  ctr: number | null;
+  cvr: number | null;
+  viewCount: number | null;
+  liveSessionId: string | null;
+  matched: boolean;
+  sessionCount: number;
+  previewImage?: string | null;
+  error?: string | null;
+};
+
+export type ShopeeScreenRankingsResult = {
+  sessionId: string | null;
+  items: ShopeeScreenRankingItem[];
+};
 export type ShowShopeeBasketItemPayload = {
   clear?: boolean;
   productUrl?: string | null;
@@ -396,11 +419,14 @@ export type UpdateLiveCampaignStateResult = {
   cookieSource?: 'ads-account' | 'live-channel' | null;
   liveChannelId?: string | null;
   campaignId: number;
+  replacementCampaignId?: number | null;
+  replacementCampaign?: AdsLiveCampaignRecord | null;
   action: 'pause' | 'resume' | 'stop';
   accepted?: boolean;
   state?: string | null;
   campaignName?: string | null;
   overlap?: unknown;
+  restarted?: boolean;
   shopee?: unknown;
 };
 

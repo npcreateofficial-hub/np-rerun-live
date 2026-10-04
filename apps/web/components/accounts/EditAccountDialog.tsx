@@ -191,6 +191,14 @@ type BasketProductDraft = {
   discount?: string | null;
   isOutOfStock?: boolean | null;
   error?: string | null;
+  screenRank?: number | null;
+  screenRankLabel?: string | null;
+  screenRankingType?: string | null;
+  screenRankingScore?: number | null;
+  screenRankingCtr?: number | null;
+  screenRankingCvr?: number | null;
+  screenRankingViews?: number | null;
+  screenRankingError?: string | null;
   pinEnabled?: boolean | null;
   videoId?: string | null;
   videoTitle?: string | null;
@@ -300,6 +308,7 @@ const [caption, setCaption] = useState('');
   const coverInputRef = useRef<HTMLInputElement | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loadingBasketDetails, setLoadingBasketDetails] = useState(false);
+  const [loadingBasketRanking, setLoadingBasketRanking] = useState(false);
   const [activeStep, setActiveStep] = useState(1);
   const [aiCommentAutoReply, setAiCommentAutoReply] = useState(false);
   const [aiCommentApiKey, setAiCommentApiKey] = useState('');
@@ -350,6 +359,7 @@ setCaption((account as any).caption ?? 'โปรโมตเฉพาะใน�
     setProxyOpen(false);
     setError(null);
     setLoadingBasketDetails(false);
+    setLoadingBasketRanking(false);
     const hasSavedAiKey = Boolean((account as any).aiCommentApiKey);
     setHasSavedAiCommentApiKey(hasSavedAiKey);
     setAiCommentAutoReply(Boolean((account as any).aiCommentAutoReply));
@@ -407,6 +417,14 @@ setCaption((account as any).caption ?? 'โปรโมตเฉพาะใน�
           rating: draft?.rating ?? null,
           discount: draft?.discount ?? null,
           isOutOfStock: draft?.isOutOfStock ?? null,
+          screenRank: draft?.screenRank ?? null,
+          screenRankLabel: draft?.screenRankLabel ?? null,
+          screenRankingType: draft?.screenRankingType ?? null,
+          screenRankingScore: draft?.screenRankingScore ?? null,
+          screenRankingCtr: draft?.screenRankingCtr ?? null,
+          screenRankingCvr: draft?.screenRankingCvr ?? null,
+          screenRankingViews: draft?.screenRankingViews ?? null,
+          screenRankingError: draft?.screenRankingError ?? null,
           pinEnabled: draft?.pinEnabled ?? true,
           videoId: draft?.videoId ?? null,
           videoTitle: draft?.videoTitle ?? null,
@@ -438,6 +456,14 @@ setCaption((account as any).caption ?? 'โปรโมตเฉพาะใน�
           discount: draft?.discount ?? null,
           isOutOfStock: draft?.isOutOfStock ?? null,
           error: draft?.error ?? null,
+          screenRank: draft?.screenRank ?? null,
+          screenRankLabel: draft?.screenRankLabel ?? null,
+          screenRankingType: draft?.screenRankingType ?? null,
+          screenRankingScore: draft?.screenRankingScore ?? null,
+          screenRankingCtr: draft?.screenRankingCtr ?? null,
+          screenRankingCvr: draft?.screenRankingCvr ?? null,
+          screenRankingViews: draft?.screenRankingViews ?? null,
+          screenRankingError: draft?.screenRankingError ?? null,
           pinEnabled: draft?.pinEnabled ?? true,
           videoId: draft?.videoId ?? null,
           videoTitle: draft?.videoTitle ?? null,
@@ -778,6 +804,14 @@ const syncBasketProductRows = async () => {
           discount: item.discount === null || item.discount === undefined ? old?.discount ?? null : String(item.discount),
           isOutOfStock: item.isOutOfStock ?? old?.isOutOfStock,
           error: item.error,
+          screenRank: old?.screenRank ?? null,
+          screenRankLabel: old?.screenRankLabel ?? null,
+          screenRankingType: old?.screenRankingType ?? null,
+          screenRankingScore: old?.screenRankingScore ?? null,
+          screenRankingCtr: old?.screenRankingCtr ?? null,
+          screenRankingCvr: old?.screenRankingCvr ?? null,
+          screenRankingViews: old?.screenRankingViews ?? null,
+          screenRankingError: old?.screenRankingError ?? null,
           pinEnabled: old?.pinEnabled ?? true,
           videoId: item.videoId ?? old?.videoId ?? null,
           videoTitle: item.videoUrl ? 'วิดีโอสินค้า' : old?.videoTitle ?? null,
@@ -829,6 +863,75 @@ const syncBasketProductRows = async () => {
       setLoadingBasketDetails(false);
     }
   };
+
+  const syncBasketScreenRankings = async () => {
+    if (!account) return;
+    const links = basketLinks.split(/\r?\n/).map((item) => item.trim()).filter(Boolean).slice(0, 200);
+    if (!links.length && !basketProducts.length) {
+      setError('กรุณาวางลิงก์สินค้า Shopee ก่อนกดดึงอันดับจอ');
+      return;
+    }
+
+    const itemsToFetch = basketProducts
+      .filter((item) => item.itemId)
+      .map((item) => ({
+        shop_id: item.shopId ?? 0,
+        item_id: item.itemId!,
+        url: item.url || undefined,
+      }));
+
+    setLoadingBasketRanking(true);
+    setError(null);
+    try {
+      const result = await accountService.screenRankings(account.id, {
+        cookie: cookie.trim() || null,
+        productUrls: links,
+        items: itemsToFetch,
+      });
+
+      const rankByKey = new Map(result.items.map((item) => [`${item.shopId}:${item.itemId}`, item]));
+      const rankByUrl = new Map(result.items.filter((item) => item.url).map((item) => [item.url, item]));
+      const nextRows = basketProducts.map((row, index) => {
+        const ranking = (row.shopId && row.itemId ? rankByKey.get(`${row.shopId}:${row.itemId}`) : undefined)
+          || (row.url ? rankByUrl.get(row.url) : undefined);
+        if (!ranking) {
+          return {
+            ...row,
+            pinOrder: index + 1,
+            screenRank: null,
+            screenRankLabel: 'ไม่พบข้อมูล',
+            screenRankingError: 'Shopee ไม่คืนข้อมูลอันดับจอของสินค้านี้',
+          };
+        }
+        return {
+          ...row,
+          shopId: row.shopId || ranking.shopId || null,
+          itemId: row.itemId || ranking.itemId || null,
+          url: row.url || ranking.url || '',
+          pinOrder: index + 1,
+          screenRank: ranking.screenRank,
+          screenRankLabel: ranking.screenRankLabel,
+          screenRankingType: ranking.rankingType,
+          screenRankingScore: ranking.score,
+          screenRankingCtr: ranking.ctr,
+          screenRankingCvr: ranking.cvr,
+          screenRankingViews: ranking.viewCount,
+          screenRankingError: ranking.error ?? null,
+        };
+      });
+
+      setBasketProductDrafts(nextRows);
+      setBasketLinks(nextRows.map((item) => item.url).filter(Boolean).join('\n'));
+      const matched = result.items.filter((item) => item.matched).length;
+      const failed = result.items.filter((item) => item.error).length;
+      setError(failed ? `เช็กอันดับจอเสร็จแล้ว แต่มี ${failed} รายการที่เช็กไม่ได้` : `ดึงอันดับจอสำเร็จ พบสินค้าติดจอ ${matched}/${result.items.length} รายการ`);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'ดึงอันดับจอไม่สำเร็จ');
+    } finally {
+      setLoadingBasketRanking(false);
+    }
+  };
+
   const handleCoverChange = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -1108,6 +1211,7 @@ const syncBasketProductRows = async () => {
                   <button type="button" onClick={() => setAllBasketPinEnabled(!allBasketProductsSelected)} disabled={!basketProducts.length} className="inline-flex h-9 shrink-0 items-center gap-2 rounded-lg border border-[#c7962d]/32 bg-[#171410] px-3 text-[12px] font-black text-[#f7f1e7] disabled:opacity-40">{allBasketProductsSelected ? 'ยกเลิกทั้งหมด' : 'เลือกทั้งหมด'}</button>
                   <button type="button" onClick={clearAllBasketProducts} disabled={!basketProducts.length && !basketLinks.trim() && !basketLinkInput.trim()} className="inline-flex h-9 shrink-0 items-center gap-2 rounded-lg border border-[#5b241f] bg-[#210d0b] px-3 text-[12px] font-black text-[#ffaaa1] transition hover:border-[#ff766f] hover:text-[#ffd6d2] disabled:opacity-40"><Trash2 size={14} /> ลบทั้งหมด</button>
                   <button type="button" onClick={toggleBasketPinLoop} disabled={!selectedPinCount || basketPinSyncing} className={`inline-flex h-9 shrink-0 items-center gap-2 rounded-lg px-4 text-[12px] font-black ${basketPinRunning ? 'bg-[#5a1515] text-[#ffd6d2]' : 'bg-[linear-gradient(135deg,#ffd46c,#e5a928)] text-[#1b1104]'} disabled:opacity-40`}>{basketPinSyncing ? <Loader2 size={15} className="animate-spin" /> : <Pin size={15} />} {basketPinSyncing ? 'กำลัง...' : basketPinRunning ? 'กำลังปักหมุด' : 'ปักหมุด'}</button>
+                  <button type="button" onClick={() => void syncBasketScreenRankings()} disabled={loadingBasketRanking || !basketProducts.length} className="inline-flex h-9 shrink-0 items-center gap-2 rounded-lg bg-[#0b5cad] px-4 text-[12px] font-black text-white shadow-[0_10px_24px_rgba(45,167,255,.18)] disabled:opacity-40">{loadingBasketRanking ? <Loader2 size={15} className="animate-spin" /> : <Radio size={15} />} ดึงอันดับจอ</button>
                   <button type="button" onClick={() => void syncBasketProductRows()} disabled={loadingBasketDetails} className="inline-flex h-9 shrink-0 items-center gap-2 rounded-lg bg-[linear-gradient(135deg,#ffd46c,#e5a928)] px-4 text-[12px] font-black text-[#1b1104]">{loadingBasketDetails ? <Loader2 size={15} className="animate-spin" /> : <PackageSearch size={15} />} ดึงข้อมูลสินค้า</button>
                 </div>
               </div>
@@ -1115,8 +1219,8 @@ const syncBasketProductRows = async () => {
                 <div className="min-h-0 overflow-hidden bg-[#090908] p-4">
                   {basketProducts.length === 0 ? <div className="grid h-full place-items-center rounded-xl border border-dashed border-[#c7962d]/32 bg-black/[0.38] p-6 text-center text-[13px] font-bold text-[#8f877b]">วางลิงก์ด้านขวา แล้วกดเพิ่มลิงก์ รายละเอียดจะแสดงเป็นตารางตรงนี้</div> : (
                     <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-xl border border-[#c7962d]/32">
-                      <div className="grid shrink-0 grid-cols-[46px_52px_minmax(210px,1.2fr)_minmax(140px,.8fr)_64px_80px_64px_70px_44px] border-b border-[#c7962d]/32 bg-[#15120d] px-3 py-2 text-[10px] font-black text-[#ffd46c] shadow-[0_8px_18px_rgba(0,0,0,.35)]"><span>ลำดับ</span><span>รูป</span><span>สินค้า</span><span>ลิงก์</span><span>คลัง</span><span>ราคา</span><span>ขาย</span><span>ปักหมุด</span><span>ลบ</span></div>
-                      <div className="min-h-0 flex-1 overflow-y-auto divide-y divide-[#2d2110]">{basketProducts.map((item, index) => (<div key={item.key} className="grid grid-cols-[46px_52px_minmax(210px,1.2fr)_minmax(140px,.8fr)_64px_80px_64px_70px_44px] items-center gap-0 px-3 py-2 text-[11px] font-bold text-[#c9c2b6]"><span className="text-[#ffd46c]">{index + 1}</span><div className="grid h-11 w-11 place-items-center overflow-hidden rounded-lg border border-[#4e3816] bg-[#080807]">{item.image ? <img src={item.image} alt={item.name ?? 'สินค้า'} className="h-full w-full object-contain" /> : <ShoppingBag size={18} className="text-[#7f786f]" />}</div><div className="min-w-0 pr-3"><div className="truncate text-[12px] font-black text-[#f7f1e7]">{item.name}</div><div className="mt-0.5 truncate font-mono text-[9px] text-[#7f786f]">{item.shopId && item.itemId ? `${item.shopId}/${item.itemId}` : 'รอแปลงลิงก์'}</div>{item.error ? <div className="mt-0.5 truncate text-[9px] text-[#ffaaa1]">สาเหตุ: {item.error}</div> : <div className="mt-0.5 truncate text-[9px] text-[#9d968d]">วิดีโอ: {item.videoUrl ? 'มีวิดีโอสินค้า' : 'ไม่มีวิดีโอสินค้า'}</div>}</div><div className="min-w-0 pr-2 font-mono text-[10px] text-[#9d968d]"><div className="truncate" title={item.url}>{item.url || '-'}</div>{item.videoUrl ? <button type="button" onClick={() => setProductPreview(item)} className="mt-1 inline-flex h-6 items-center justify-center rounded-md border border-[#c7962d]/32 bg-[#171410] px-2 text-[10px] font-black text-[#ffd46c]">ดูวิดีโอ</button> : null}</div><span>{item.error ? '-' : item.stock ?? '-'}</span><span className="text-[#ffd46c]">{item.error ? '-' : formatMoney(item.price ?? item.priceMin)}</span><span>{item.error ? '-' : item.sold ?? '-'}</span><label className="flex h-9 w-9 items-center justify-center rounded-md border border-[#c7962d]/32 bg-black/[0.38]"><input type="checkbox" checked={item.pinEnabled !== false} onChange={(event) => updateBasketProduct(item.key, { pinEnabled: event.target.checked, pinSeconds: basketPinSecondValue })} className="h-4 w-4 accent-[#e3aa3a]" /></label><button type="button" onClick={() => removeBasketProductRow(item)} className="grid h-9 w-9 place-items-center rounded-md border border-[#5b241f] bg-[#210d0b] text-[#ffaaa1] transition hover:border-[#ff766f] hover:text-[#ffd6d2]" title="ลบสินค้า"><Trash2 size={14} /></button></div>))}</div>
+                      <div className="grid shrink-0 grid-cols-[46px_52px_minmax(190px,1.15fr)_minmax(120px,.7fr)_82px_64px_80px_64px_70px_44px] border-b border-[#c7962d]/32 bg-[#15120d] px-3 py-2 text-[10px] font-black text-[#ffd46c] shadow-[0_8px_18px_rgba(0,0,0,.35)]"><span>ลำดับ</span><span>รูป</span><span>สินค้า</span><span>ลิงก์</span><span>อันดับจอ</span><span>คลัง</span><span>ราคา</span><span>ขาย</span><span>ปักหมุด</span><span>ลบ</span></div>
+                      <div className="min-h-0 flex-1 overflow-y-auto divide-y divide-[#2d2110]">{basketProducts.map((item, index) => (<div key={item.key} className="grid grid-cols-[46px_52px_minmax(190px,1.15fr)_minmax(120px,.7fr)_82px_64px_80px_64px_70px_44px] items-center gap-0 px-3 py-2 text-[11px] font-bold text-[#c9c2b6]"><span className="text-[#ffd46c]">{index + 1}</span><div className="grid h-11 w-11 place-items-center overflow-hidden rounded-lg border border-[#4e3816] bg-[#080807]">{item.image ? <img src={item.image} alt={item.name ?? 'สินค้า'} className="h-full w-full object-contain" /> : <ShoppingBag size={18} className="text-[#7f786f]" />}</div><div className="min-w-0 pr-3"><div className="truncate text-[12px] font-black text-[#f7f1e7]">{item.name}</div><div className="mt-0.5 truncate font-mono text-[9px] text-[#7f786f]">{item.shopId && item.itemId ? `${item.shopId}/${item.itemId}` : 'รอแปลงลิงก์'}</div>{item.error ? <div className="mt-0.5 truncate text-[9px] text-[#ffaaa1]">สาเหตุ: {item.error}</div> : <div className="mt-0.5 truncate text-[9px] text-[#9d968d]">วิดีโอ: {item.videoUrl ? 'มีวิดีโอสินค้า' : 'ไม่มีวิดีโอสินค้า'}</div>}</div><div className="min-w-0 pr-2 font-mono text-[10px] text-[#9d968d]"><div className="truncate" title={item.url}>{item.url || '-'}</div>{item.videoUrl ? <button type="button" onClick={() => setProductPreview(item)} className="mt-1 inline-flex h-6 items-center justify-center rounded-md border border-[#c7962d]/32 bg-[#171410] px-2 text-[10px] font-black text-[#ffd46c]">ดูวิดีโอ</button> : null}</div><div className="min-w-0 pr-2"><div className={`inline-flex max-w-full items-center rounded-md px-2 py-1 text-[10px] font-black ${item.screenRankingError ? 'bg-[#3a1512] text-[#ffaaa1]' : item.screenRank ? 'bg-[#0c3f2a] text-[#9cf2b8]' : 'bg-[#171410] text-[#c9c2b6]'}`} title={item.screenRankingError || undefined}>{item.screenRankLabel || '-'}</div>{item.screenRankingType ? <div className="mt-1 truncate text-[9px] text-[#8f877b]">{item.screenRankingType}{item.screenRankingViews !== null && item.screenRankingViews !== undefined ? ` · ${item.screenRankingViews.toLocaleString('th-TH')} วิว` : ''}</div> : null}</div><span>{item.error ? '-' : item.stock ?? '-'}</span><span className="text-[#ffd46c]">{item.error ? '-' : formatMoney(item.price ?? item.priceMin)}</span><span>{item.error ? '-' : item.sold ?? '-'}</span><label className="flex h-9 w-9 items-center justify-center rounded-md border border-[#c7962d]/32 bg-black/[0.38]"><input type="checkbox" checked={item.pinEnabled !== false} onChange={(event) => updateBasketProduct(item.key, { pinEnabled: event.target.checked, pinSeconds: basketPinSecondValue })} className="h-4 w-4 accent-[#e3aa3a]" /></label><button type="button" onClick={() => removeBasketProductRow(item)} className="grid h-9 w-9 place-items-center rounded-md border border-[#5b241f] bg-[#210d0b] text-[#ffaaa1] transition hover:border-[#ff766f] hover:text-[#ffd6d2]" title="ลบสินค้า"><Trash2 size={14} /></button></div>))}</div>
                     </div>
                   )}
                   {parsedBasket.invalid.length ? <div className="mt-2 rounded-xl border border-[#e3aa3a]/40 bg-[#2d1e0e] px-4 py-3 text-[12px] font-bold text-[#f3d48a]">มีข้อความที่ไม่ใช่ลิงก์ Shopee {parsedBasket.invalid.length} บรรทัด ระบบจะข้ามตอนขึ้นไลฟ์</div> : null}

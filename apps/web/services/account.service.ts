@@ -9,6 +9,7 @@ import type {
   ShopeeBasketItemsResult,
   ShopeeProductDetailsPayload,
   ShopeeProductDetailsResult,
+  ShopeeScreenRankingsResult,
   ShowShopeeBasketItemPayload,
   ShowShopeeBasketItemResult,
   ShopeeShowLoopResult,
@@ -39,6 +40,13 @@ export const accountService = {
 
   productDetails(id: string, payload: ShopeeProductDetailsPayload) {
     return api<ShopeeProductDetailsResult>(`/live-channels/${id}/product-details`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  screenRankings(id: string, payload: ShopeeProductDetailsPayload) {
+    return api<ShopeeScreenRankingsResult>(`/live-channels/${id}/screen-rankings`, {
       method: 'POST',
       body: JSON.stringify(payload),
     });
