@@ -1,0 +1,53 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: np-live-main-api
+    restart: unless-stopped
+    env_file:
+      - ./apps/api/.env.production
+    environment:
+      HOST: 0.0.0.0
+      FFMPEG_PATH: /usr/bin/ffmpeg
+    volumes:
+      - ./data:/data
+      - ./uploads:/app/apps/api/uploads
+      - ./apps/api/.chrome-shopee:/app/apps/api/.chrome-shopee
+      - ./apps/api/.chrome-shopee-debug:/app/apps/api/.chrome-shopee-debug
+    ports:
+      - "127.0.0.1:4100:4100"
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    container_name: np-live-main-web
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      API_PROXY_TARGET: http://api:4100
+      NEXT_PUBLIC_API_BASE_URL: /backend-api
+      NEXT_PUBLIC_MEDIA_BASE_URL: /backend-media
+    depends_on:
+      - api
+    ports:
+      - "3200:3200"
+
+  admin:
+    build:
+      context: .
+      dockerfile: Dockerfile.admin
+      args:
+        API_PROXY_TARGET: http://api:4100
+    container_name: np-live-main-admin
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      API_PROXY_TARGET: http://api:4100
+      NEXT_PUBLIC_FRONTEND_URL: https://live-shopee.np-class.com
+    depends_on:
+      - api
+    ports:
+      - "3300:3300"
+
+

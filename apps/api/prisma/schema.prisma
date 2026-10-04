@@ -1,0 +1,336 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                String   @id @default(cuid())
+  email             String   @unique
+  username          String?  @unique
+  displayName       String?
+  phone             String?
+  profileImage      String?
+  legalFirstName    String?
+  legalLastName     String?
+  bank              String?
+  bankAccountNumber String?
+  bankAccountName   String?
+  idCardImage       String?
+  bankBookImage     String?
+  lineId            String?
+  licenseKey        String?
+  deviceId          String?
+  deviceName        String?
+  deviceBoundAt     DateTime?
+  deviceMoveLimit   Int      @default(0)
+  deviceMoveUsed    Int      @default(0)
+  deviceLockEnabled Boolean  @default(true)
+  adminCustomerName String?
+  adminLineId       String?
+  marketingStatus   String   @default("NEW") // NEW | FOLLOW_UP | INTERESTED | RENEWED | PAUSED
+  lastContactedAt   DateTime?
+  adminNote         String?
+  passwordHash      String
+  role              String   @default("USER") // USER | ADMIN | STAFF
+  isActive          Boolean  @default(true)
+  credit            Float    @default(0)
+  packageId         String?
+  packageStartedAt  DateTime?
+  packageExpiresAt  DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  package       Package?       @relation(fields: [packageId], references: [id])
+  refreshTokens RefreshToken[]
+  devices       UserDevice[]
+  liveChannels  LiveChannel[]
+  videos        Video[]
+  proxies       Proxy[]
+  adsAccounts   AdsAccount[]
+  adsLiveCampaigns AdsLiveCampaign[]
+  reruns        Rerun[]
+  folders       StorageFolder[]
+  files         StorageFile[]
+  payments      Payment[]
+  notifications Notification[]
+}
+
+model RefreshToken {
+  id        String   @id @default(cuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Package {
+  id              String   @id @default(cuid())
+  name            String
+  code            String   @unique
+  category        String   @default("STARTER") // STARTER | PRO | PROMAX
+  description     String?
+  priceBaht       Float    @default(0)
+  durationDays    Int      @default(30)
+  maxAccounts     Int      @default(1)
+  maxLiveChannels Int      @default(1)
+  maxVideos       Int      @default(5)
+  storageGb       Int      @default(1)
+  maxDevices      Int      @default(1)
+  maxProxies      Int      @default(1)
+  isActive        Boolean  @default(true)
+  sortOrder       Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  users User[]
+}
+
+model UserDevice {
+  id        String   @id @default(cuid())
+  userId    String
+  deviceId  String
+  name      String?
+  firstSeen DateTime @default(now())
+  lastSeen  DateTime @default(now())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, deviceId])
+  @@index([userId])
+}
+
+model LiveChannel {
+  id                  String    @id @default(cuid())
+  userId              String
+  name                String
+  isOnline            Boolean   @default(false)
+  proxyId             String?
+  platform            String    @default("SHOPEE") // SHOPEE | TIKTOK
+  accountName         String?
+  shopId              String?
+  platformUid         String?
+  avatar              String?
+  status              String?
+  cookie              String?
+  cookieValid         Boolean?
+  rtmpUrl             String?
+  streamKey           String?
+  coverImageUrl       String?
+  liveSessionId       String?
+  basketLinks         String?
+  basketItemsJson     String?
+  aiCommentApiKey     String?
+  aiCommentAutoReply  Boolean?  @default(false)
+  videoQueueJson      String?
+  videoQueueIndex     Int?      @default(0)
+  caption             String?
+  liveTitle           String?
+  description         String?
+  autoLive            Boolean?  @default(false)
+  liveDurationMinutes Int?
+  restartDelayMinutes Int?
+  scheduledStartAt    DateTime?
+  scheduledStopAt     DateTime?
+  lastCheckedAt       DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  proxy  Proxy?  @relation(fields: [proxyId], references: [id])
+  videos Video[]
+  reruns Rerun[]
+
+  @@index([userId])
+}
+
+model Video {
+  id            String   @id @default(cuid())
+  userId        String
+  liveChannelId String?
+  title         String
+  status        String   @default("PENDING") // PENDING | PROCESSING | READY | FAILED
+  sourceUrl     String?
+  fileKey       String?
+  durationSec   Int?
+  sizeMb        Float?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  liveChannel LiveChannel? @relation(fields: [liveChannelId], references: [id])
+  reruns      Rerun[]
+
+  @@index([userId])
+}
+
+model StorageFolder {
+  id        String   @id @default(cuid())
+  userId    String
+  name      String
+  parentId  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user  User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  files StorageFile[]
+
+  @@index([userId])
+}
+
+model StorageFile {
+  id        String   @id @default(cuid())
+  userId    String
+  name      String
+  sizeBytes Int      @default(0)
+  mimeType  String?
+  url       String?
+  folderId  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user   User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  folder StorageFolder? @relation(fields: [folderId], references: [id])
+
+  @@index([userId])
+}
+
+model Proxy {
+  id        String    @id @default(cuid())
+  userId    String
+  host      String
+  port      Int
+  username  String?
+  password  String?
+  note      String?
+  status    String    @default("UNKNOWN") // UNKNOWN | ACTIVE | INACTIVE
+  checkedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  liveChannels LiveChannel[]
+
+  @@index([userId])
+}
+
+model AdsAccount {
+  id          String    @id @default(cuid())
+  userId      String
+  accountName String
+  shopName    String?
+  shopId      String?
+  adsCookie   String?
+  status      String    @default("UNKNOWN") // UNKNOWN | ACTIVE | INVALID
+  note        String?
+  checkedAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  liveCampaigns AdsLiveCampaign[]
+
+  @@index([userId])
+}
+
+model AdsLiveCampaign {
+  id           String   @id @default(cuid())
+  userId       String
+  adsAccountId String
+  campaignId   Int
+  campaignUuid String?
+  name         String
+  objective    String
+  state        String   @default("ongoing")
+  automationSettings String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  adsAccount AdsAccount @relation(fields: [adsAccountId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, campaignId])
+  @@index([adsAccountId])
+}
+
+model LiveGmvSnapshot {
+  id            String   @id @default(cuid())
+  liveChannelId String
+  sessionId     String
+  capturedAt    DateTime
+  gmv           Float    @default(0)
+  createdAt     DateTime @default(now())
+
+  @@index([liveChannelId, sessionId, capturedAt])
+}
+
+model Rerun {
+  id            String    @id @default(cuid())
+  userId        String
+  liveChannelId String
+  videoId       String
+  title         String
+  status        String    @default("STARTING") // STARTING | LIVE | STOPPING | ENDED | FAILED
+  rtmpUrl       String?
+  streamKey     String?
+  ffmpegPid     Int?
+  startedAt     DateTime?
+  stoppedAt     DateTime?
+  durationSec   Int?
+  errorMessage  String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  liveChannel LiveChannel @relation(fields: [liveChannelId], references: [id])
+  video       Video       @relation(fields: [videoId], references: [id])
+
+  @@index([userId])
+  @@index([liveChannelId])
+}
+
+model Payment {
+  id           String   @id @default(cuid())
+  userId       String
+  amountBaht   Float
+  method       String?
+  status       String   @default("PENDING") // PENDING | PAID | REJECTED
+  reference    String?
+  slipImageUrl String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String?
+  title     String
+  message   String
+  imageUrl  String?
+  styleJson String?
+  ctaLabel  String?
+  ctaUrl    String?
+  type      String   @default("INFO") // INFO | SUCCESS | WARNING | ERROR
+  status    String   @default("SENT") // DRAFT | SENT | ARCHIVED
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status])
+}

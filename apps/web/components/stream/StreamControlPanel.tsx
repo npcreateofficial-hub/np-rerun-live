@@ -1,0 +1,1 @@
+export function StreamControlPanel() { return <div className="glass-card p-6"><b className="text-xl">ควบคุมการไลฟ์</b><div className="mt-4 flex gap-3"><button className="rounded-xl bg-mintbrand px-5 py-3 font-bold text-ink">เริ่มไลฟ์</button><button className="rounded-xl bg-pinkbrand px-5 py-3 font-bold text-ink">หยุดไลฟ์</button></div></div>; }

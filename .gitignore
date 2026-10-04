@@ -1,0 +1,32 @@
+node_modules
+apps/web/public/uploads/
+
+# dependencies
+node_modules/
+
+# build outputs
+.next/
+dist/
+*.tsbuildinfo
+.turbo/
+.cache/
+
+# runtime data and media
+apps/web/public/uploads/
+uploads/
+data/
+*.mp4
+*.mov
+*.webm
+*.sqlite
+*.sqlite3
+*.db
+
+# secrets
+.env
+.env.*
+!.env.example
+
+# browser/session profiles
+.chrome-shopee/
+.chrome-shopee-debug/

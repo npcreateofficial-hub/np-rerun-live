@@ -1,0 +1,15 @@
+{
+  "name": "np-live",
+  "private": true,
+  "workspaces": [
+    "apps/web",
+    "apps/api",
+    "apps/admin"
+  ],
+  "scripts": {
+    "dev:web": "npm run dev --workspace np-live-web",
+    "dev:admin": "npm run dev --workspace np-live-admin",
+    "dev:api": "npm run dev --workspace np-live-api",
+    "setup:api": "npm run setup --workspace np-live-api"
+  }
+}
