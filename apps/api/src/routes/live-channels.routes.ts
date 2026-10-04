@@ -327,6 +327,18 @@ const sessionItemsSchema = z.object({
   liveUrl: z.string().nullish(),
 });
 
+const sessionCookieHints = new Map<string, string>();
+
+function withLocalTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timeout ${Math.round(timeoutMs / 1000)}s`)), timeoutMs);
+    promise
+      .then(resolve)
+      .catch(reject)
+      .finally(() => clearTimeout(timer));
+  });
+}
+
 function productDetailsInputFromBody(body: z.infer<typeof productDetailsSchema>) {
   const links = [body.productUrl, ...(body.productUrls ?? [])]
     .map((item) => String(item || '').trim())
@@ -464,36 +476,36 @@ liveChannelsRouter.post(
     }
 
     const attempts: Array<{ accountName: string; source: string; ok: boolean; total: number; error?: string }> = [];
-    let result: Awaited<ReturnType<typeof shopee.basketItems>> | null = null;
-    let bestEmptyResult: Awaited<ReturnType<typeof shopee.basketItems>> | null = null;
+    const hintedChannelId = sessionCookieHints.get(sessionId);
+    const limitedCandidates = candidates
+      .slice(0, 8)
+      .sort((left, right) => {
+        if (hintedChannelId) {
+          if (left.channelId === hintedChannelId) return -1;
+          if (right.channelId === hintedChannelId) return 1;
+        }
+        if (left.source === 'current-form-cookie' && right.source !== 'current-form-cookie') return 1;
+        if (right.source === 'current-form-cookie' && left.source !== 'current-form-cookie') return -1;
+        return 0;
+      });
+    let result: (Awaited<ReturnType<typeof shopee.basketItems>> & { __candidate?: typeof limitedCandidates[number] }) | null = null;
+    let bestEmptyResult: (Awaited<ReturnType<typeof shopee.basketItems>> & { __candidate?: typeof limitedCandidates[number] }) | null = null;
 
-    for (const candidate of candidates) {
+    for (const candidate of limitedCandidates) {
       try {
-        const next = await shopee.basketItems(candidate.cookie, sessionId);
+        const next = await withLocalTimeout(
+          shopee.basketItems(candidate.cookie, sessionId),
+          candidate.channelId === hintedChannelId ? 18_000 : 9_000,
+          `ดึงสินค้า Shopee ด้วยคุกกี้ ${candidate.accountName}`,
+        );
+        const tagged = { ...next, __candidate: candidate };
         attempts.push({ accountName: candidate.accountName, source: candidate.source, ok: true, total: next.items.length });
         if (next.items.length) {
-          result = {
-            ...next,
-            raw: {
-              source: candidate.source,
-              channelId: candidate.channelId,
-              accountName: candidate.accountName,
-              attempts,
-              raw: next.raw,
-            },
-          };
+          result = tagged;
+          sessionCookieHints.set(sessionId, candidate.channelId);
           break;
         }
-        bestEmptyResult = bestEmptyResult ?? {
-          ...next,
-          raw: {
-            source: candidate.source,
-            channelId: candidate.channelId,
-            accountName: candidate.accountName,
-            attempts,
-            raw: next.raw,
-          },
-        };
+        bestEmptyResult = bestEmptyResult ?? tagged;
       } catch (error) {
         attempts.push({
           accountName: candidate.accountName,
@@ -505,7 +517,9 @@ liveChannelsRouter.post(
       }
     }
 
-    if (!result && !bestEmptyResult) {
+    result = result ?? bestEmptyResult;
+
+    if (!result) {
       const names = attempts.map((item) => item.accountName).filter(Boolean).join(', ');
       throw new AppError(
         `คุกกี้ Shopee ที่มีอยู่ยังดึงข้อมูลไม่ได้${names ? ` (${names})` : ''} กรุณาอัปเดตคุกกี้ใหม่`,
@@ -514,14 +528,19 @@ liveChannelsRouter.post(
       );
     }
 
-    result = result ?? {
-      ...bestEmptyResult!,
+    const usedCandidate = result.__candidate;
+    const output = {
+      ...result,
       raw: {
-        ...((bestEmptyResult!.raw && typeof bestEmptyResult!.raw === 'object') ? bestEmptyResult!.raw : {}),
+        source: usedCandidate?.source ?? 'account-cookie-pool',
+        channelId: usedCandidate?.channelId ?? null,
+        accountName: usedCandidate?.accountName ?? null,
         attempts,
+        raw: result.raw,
       },
     };
-    return ok(res, result, result.items.length ? 'โหลดสินค้าในไลฟ์จาก session สำเร็จ' : 'ไม่พบสินค้าใน session นี้');
+    delete (output as any).__candidate;
+    return ok(res, output, output.items.length ? 'โหลดสินค้าในไลฟ์จาก session สำเร็จ' : 'ไม่พบสินค้าใน session นี้');
   }),
 );
 
