@@ -2046,6 +2046,10 @@ async function readShopeeLiveBasketItems(client: CdpClient, liveSessionId: strin
     `/api/v1/session/${encodeURIComponent(liveSessionId)}/host/items?offset=0&limit=200&visible=true`,
     `/api/v1/session/${encodeURIComponent(liveSessionId)}/sp_items?offset=0&limit=200`,
     `/api/v1/session/${encodeURIComponent(liveSessionId)}/more_items?offset=0&limit=200`,
+    `/webapi/v1/session/${encodeURIComponent(liveSessionId)}/items?offset=0&limit=200&visible=true`,
+    `/webapi/v1/session/${encodeURIComponent(liveSessionId)}/host/items?offset=0&limit=200&visible=true`,
+    `/webapi/v1/session/${encodeURIComponent(liveSessionId)}/sp_items?offset=0&limit=200`,
+    `/webapi/v1/session/${encodeURIComponent(liveSessionId)}/more_items?offset=0&limit=200`,
   ];
   let lastPayload: unknown = null;
   const items: ShopeeBasketItem[] = [];
@@ -2059,7 +2063,119 @@ async function readShopeeLiveBasketItems(client: CdpClient, liveSessionId: strin
       // Some Shopee item lists are only available in specific room states. Keep trying the next source.
     }
   }
+  if (!items.length) {
+    const fallback = await readShopeeLiveBasketItemsFromViewerPage(client, liveSessionId);
+    if (fallback.items.length) {
+      items.push(...fallback.items);
+      lastPayload = fallback.lastPayload ?? lastPayload;
+    }
+  }
   return { items, lastPayload };
+}
+
+async function readShopeeLiveBasketItemsFromViewerPage(client: CdpClient, liveSessionId: string) {
+  await client.send('Network.enable').catch(() => undefined);
+  const payloads: unknown[] = [];
+  const items: ShopeeBasketItem[] = [];
+  const seenBodies = new Set<string>();
+
+  const readPayload = (payload: unknown) => {
+    payloads.push(payload);
+    items.push(...collectShopeeBasketItemsFromPayload(payload));
+  };
+
+  const readText = (text: string, source: string) => {
+    const trimmed = text.trim();
+    if (!trimmed || seenBodies.has(trimmed)) return;
+    seenBodies.add(trimmed);
+    try {
+      readPayload({ source, json: JSON.parse(trimmed) });
+      return;
+    } catch {
+      // Keep parsing embedded JSON below.
+    }
+
+    const matches = trimmed.match(/\{[\s\S]{30,}\}/g) || [];
+    for (const match of matches.slice(0, 10)) {
+      try {
+        readPayload({ source, json: JSON.parse(match) });
+      } catch {
+        // Ignore non-JSON fragments.
+      }
+    }
+  };
+
+  const handler = (message: any) => {
+    if (message.method !== 'Network.responseReceived') return;
+    const responseUrl = String(message.params?.response?.url || '');
+    if (!/live\.shopee\.co\.th|shopee\.co\.th/i.test(responseUrl)) return;
+    if (!/session|item|product|cart|basket|viewer|share|pdp/i.test(responseUrl)) return;
+    void client
+      .send<{ body?: string; base64Encoded?: boolean }>('Network.getResponseBody', {
+        requestId: message.params.requestId,
+      })
+      .then((body) => {
+        const text = body.base64Encoded
+          ? Buffer.from(body.body || '', 'base64').toString('utf8')
+          : String(body.body || '');
+        if (/(shop_id|shopId|item_id|itemId|items|product|สินค้า)/i.test(text)) readText(text, responseUrl);
+      })
+      .catch(() => undefined);
+  };
+
+  client.onMessage(handler);
+  const urls = [
+    `https://live.shopee.co.th/p/viewer-end?session=${encodeURIComponent(liveSessionId)}`,
+    `https://live.shopee.co.th/p/share?from=live&session=${encodeURIComponent(liveSessionId)}`,
+    `https://live.shopee.co.th/share?from=live&session=${encodeURIComponent(liveSessionId)}`,
+  ];
+  for (const url of urls) {
+    try {
+      await navigateCdp(client, url, 12_000);
+      await new Promise((resolve) => setTimeout(resolve, 5_000));
+      const page = await client
+        .send<{ result?: { value?: { href?: string; title?: string; text?: string; scripts?: string } }; exceptionDetails?: any }>(
+          'Runtime.evaluate',
+          {
+            expression: `
+              (() => ({
+                href: location.href,
+                title: document.title,
+                text: document.body?.innerText || '',
+                scripts: [...document.querySelectorAll('script')]
+                  .map((script) => script.textContent || '')
+                  .filter(Boolean)
+                  .join('\\n')
+              }))()
+            `,
+            returnByValue: true,
+          },
+          8_000,
+        )
+        .catch(() => null);
+      const value = page?.result?.value;
+      if (value?.text) readText(value.text, `${url}:dom-text`);
+      if (value?.scripts) readText(value.scripts, `${url}:scripts`);
+      if (items.length) break;
+    } catch {
+      // Try the next viewer surface.
+    }
+  }
+
+  const cleanItems = dedupeShopeeBasketItems(items);
+  if (!cleanItems.length) {
+    console.warn('[shopee-basket] viewer fallback found no items', {
+      sessionId: liveSessionId,
+      payloads: payloads.length,
+    });
+  } else {
+    console.info('[shopee-basket] viewer fallback found items', {
+      sessionId: liveSessionId,
+      count: cleanItems.length,
+      payloads: payloads.length,
+    });
+  }
+  return { items: cleanItems, lastPayload: payloads[payloads.length - 1] ?? null };
 }
 
 function sameShopeeBasketItem(left: ShopeeBasketItem, right: ShopeeBasketItem) {
