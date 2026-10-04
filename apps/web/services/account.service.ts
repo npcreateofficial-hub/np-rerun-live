@@ -38,6 +38,13 @@ export const accountService = {
     return api<ShopeeBasketItemsResult>(`/live-channels/${id}/basket-items`);
   },
 
+  sessionItems(id: string, payload: { sessionId?: string | null; liveUrl?: string | null; cookie?: string | null }) {
+    return api<ShopeeBasketItemsResult>(`/live-channels/${id}/session-items`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
   productDetails(id: string, payload: ShopeeProductDetailsPayload) {
     return api<ShopeeProductDetailsResult>(`/live-channels/${id}/product-details`, {
       method: 'POST',

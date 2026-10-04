@@ -1,9 +1,9 @@
 'use client';
 
-import { Copy, Loader2, Pencil, PlayCircle, Search, ShoppingBag, StopCircle, Trash2, Tv, Video, X } from 'lucide-react';
+import { BarChart3, Copy, ExternalLink, Loader2, Pencil, PlayCircle, RefreshCw, Search, ShoppingBag, StopCircle, Trash2, Tv, Video, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AccountStatusBadge } from './AccountStatusBadge';
-import type { LiveChannel, LiveChannelInsights } from '@/types/account';
+import type { LiveChannel, LiveChannelInsights, ShopeeBasketItem, ShopeeProductDetail, ShopeeScreenRankingItem } from '@/types/account';
 import type { ProxyItem } from '@/types/proxy';
 import type { VideoItem } from '@/types/video';
 import { accountService } from '@/services/account.service';
@@ -72,6 +72,18 @@ function videoFileLabel(video?: VideoItem | null) {
   return video.title?.trim() || basename(video.fileKey) || basename(video.sourceUrl) || '-';
 }
 
+function basketItemKey(item: Pick<ShopeeBasketItem, 'shop_id' | 'item_id'>) {
+  return `${Number(item.shop_id) || 0}:${Number(item.item_id) || 0}`;
+}
+
+function detailKey(item: Pick<ShopeeProductDetail, 'shopId' | 'itemId'>) {
+  return `${Number(item.shopId) || 0}:${Number(item.itemId) || 0}`;
+}
+
+function rankingKey(item: Pick<ShopeeScreenRankingItem, 'shopId' | 'itemId'>) {
+  return `${Number(item.shopId) || 0}:${Number(item.itemId) || 0}`;
+}
+
 function LiveTimer({ startedAt, baseSeconds, online }: { startedAt?: string | null; baseSeconds?: number | null; online: boolean }) {
   const [now, setNow] = useState(() => Date.now());
 
@@ -96,6 +108,7 @@ function AccountRow({
   disabled,
   onCookieCopied,
   onEdit,
+  onOpenRanking,
   onToggleStatus,
   onRemove,
 }: {
@@ -104,6 +117,7 @@ function AccountRow({
   disabled?: boolean;
   onCookieCopied: () => void;
   onEdit: (row: LiveChannel) => Promise<void> | void;
+  onOpenRanking: (row: LiveChannel, sessionId?: string | null) => void;
   onToggleStatus: (id: string, isOnline: boolean) => Promise<void> | void;
   onRemove: (id: string) => Promise<void> | void;
 }) {
@@ -224,6 +238,14 @@ function AccountRow({
           <button
             type="button"
             disabled={disabled}
+            onClick={() => onOpenRanking(row, activeSessionId)}
+            className="inline-flex h-8 w-[92px] shrink-0 items-center justify-center gap-1.5 rounded-[8px] border border-[#2da7ff]/45 bg-[#071f3d] px-2 text-[11px] font-black text-[#9ed7ff] transition hover:border-[#f2bd4b]/60 hover:text-[#ffd46c] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <BarChart3 size={13} /> อันดับจอ
+          </button>
+          <button
+            type="button"
+            disabled={disabled}
             onClick={() => void onEdit(row)}
             className="inline-flex h-8 w-[58px] shrink-0 items-center justify-center gap-1.5 rounded-[8px] border border-[#c7962d]/35 bg-[#f2bd4b]/10 px-2 text-[11px] font-black text-[#ffd46c] transition hover:border-[#9f7a32]/45 disabled:cursor-not-allowed disabled:opacity-50"
           >
@@ -243,6 +265,256 @@ function AccountRow({
   );
 }
 
+function ScreenRankingDialog({
+  row,
+  sessionId,
+  onClose,
+}: {
+  row: LiveChannel;
+  sessionId?: string | null;
+  onClose: () => void;
+}) {
+  const [sessionInput, setSessionInput] = useState(sessionId ?? '');
+  const [items, setItems] = useState<ShopeeBasketItem[]>([]);
+  const [details, setDetails] = useState<Map<string, ShopeeProductDetail>>(() => new Map());
+  const [rankings, setRankings] = useState<Map<string, ShopeeScreenRankingItem>>(() => new Map());
+  const [loading, setLoading] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const normalizedItems = useMemo(() => items
+    .map((item) => ({
+      ...item,
+      shop_id: Number(item.shop_id) || 0,
+      item_id: Number(item.item_id) || 0,
+    }))
+    .filter((item) => item.item_id > 0), [items]);
+
+  const foundCount = useMemo(() => Array.from(rankings.values()).filter((item) => item.screenRank && item.screenRank <= 10).length, [rankings]);
+  const uncheckedCount = useMemo(() => normalizedItems.filter((item) => !rankings.has(basketItemKey(item))).length, [normalizedItems, rankings]);
+
+  async function loadSessionProducts(nextSession = sessionInput) {
+    const targetSession = nextSession.trim();
+    if (!targetSession) {
+      setError('กรุณากรอก session หรือวางลิงก์ไลฟ์ก่อนเช็คอันดับจอ');
+      return;
+    }
+    setLoading(true);
+    setChecking(false);
+    setError(null);
+    setItems([]);
+    setDetails(new Map());
+    setRankings(new Map());
+    try {
+      const basket = await accountService.sessionItems(row.id, {
+        sessionId: targetSession,
+        liveUrl: targetSession,
+        cookie: row.cookie ?? null,
+      });
+      const nextItems = (basket.items ?? []).slice(0, 200);
+      setSessionInput(basket.sessionId || targetSession);
+      setItems(nextItems);
+      if (!nextItems.length) {
+        setError('ไม่พบสินค้าใน session นี้');
+        return;
+      }
+      await checkProducts(nextItems, basket.sessionId || targetSession);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'โหลดสินค้าใน session ไม่สำเร็จ');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function checkProducts(sourceItems: ShopeeBasketItem[] = normalizedItems, targetSession = sessionInput) {
+    const cleanItems = sourceItems
+      .map((item) => ({
+        ...item,
+        shop_id: Number(item.shop_id) || 0,
+        item_id: Number(item.item_id) || 0,
+      }))
+      .filter((item) => item.item_id > 0)
+      .slice(0, 200);
+    if (!cleanItems.length) {
+      setError('ยังไม่มีรายการสินค้าให้เช็ค');
+      return;
+    }
+    setChecking(true);
+    setError(null);
+    try {
+      const [detailResult, rankingResult] = await Promise.all([
+        accountService.productDetails(row.id, {
+          cookie: row.cookie ?? null,
+          items: cleanItems,
+        }),
+        accountService.screenRankings(row.id, {
+          cookie: row.cookie ?? null,
+          items: cleanItems,
+          productUrls: cleanItems.map((item) => String(item.url || '')).filter(Boolean),
+        }),
+      ]);
+
+      setDetails(new Map((detailResult.items ?? []).map((item) => [detailKey(item), item])));
+      setRankings(new Map((rankingResult.items ?? []).map((item) => [rankingKey(item), item])));
+      if (rankingResult.sessionId && rankingResult.sessionId !== targetSession) setSessionInput(rankingResult.sessionId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'เช็คอันดับจอไม่สำเร็จ');
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  useEffect(() => {
+    if (sessionId) void loadSessionProducts(sessionId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [row.id, sessionId]);
+
+  return (
+    <div className="fixed inset-0 z-[80] grid place-items-center bg-black/78 px-4 py-5 backdrop-blur-[7px]">
+      <div className="flex max-h-[92vh] w-full max-w-[1540px] flex-col overflow-hidden rounded-[18px] border border-[#c7962d]/55 bg-[radial-gradient(circle_at_8%_0%,rgba(45,167,255,.20),transparent_28%),radial-gradient(circle_at_92%_0%,rgba(242,189,75,.14),transparent_30%),linear-gradient(135deg,#061323_0%,#03070d_58%,#150f05_100%)] text-white shadow-[0_32px_110px_rgba(0,0,0,.70),0_0_34px_rgba(45,167,255,.10),inset_0_1px_0_rgba(255,255,255,.08)]">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#c7962d]/24 bg-[linear-gradient(90deg,rgba(8,33,61,.86),rgba(16,11,5,.72))] px-5 py-4">
+          <div>
+            <div className="inline-flex items-center gap-2 text-[12px] font-black uppercase tracking-[.16em] text-[#ffd46c]">
+              <BarChart3 size={15} /> Screen Ranking
+            </div>
+            <h3 className="mt-1 text-[24px] font-black text-white">เช็คอันดับจอ</h3>
+            <p className="mt-1 text-[12px] font-bold text-[#9fb1c9]">บัญชี {row.accountName || row.name} • ดึงสินค้าในไลฟ์จาก session แล้วเช็คว่าแต่ละสินค้าติดอันดับ 1-10 หรือไม่</p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="grid h-11 w-11 place-items-center rounded-[12px] border border-[#c7962d]/35 bg-black/[0.25] text-[#d8c8a1] transition hover:border-[#ffd46c] hover:text-[#ffd46c]"
+            aria-label="ปิด"
+          >
+            <X size={20} />
+          </button>
+        </div>
+
+        <div className="border-b border-[#2b7fc7]/28 px-5 py-4">
+          <div className="grid gap-3 xl:grid-cols-[minmax(360px,1fr)_auto_auto] xl:items-end">
+            <label className="block">
+              <span className="mb-2 block text-[12px] font-black text-[#bfe7ff]">Session หรือ Live URL</span>
+              <input
+                value={sessionInput}
+                onChange={(event) => setSessionInput(event.target.value)}
+                placeholder="เช่น 27648536 หรือ https://live.shopee.co.th/share?...session=27648536"
+                className="h-11 w-full rounded-[10px] border border-[#2da7ff]/35 bg-[#030912]/80 px-4 text-[13px] font-bold text-white outline-none placeholder:text-[#718199] focus:border-[#f2bd4b]/70 focus:shadow-[0_0_0_3px_rgba(242,189,75,.12)]"
+              />
+            </label>
+            <button
+              type="button"
+              disabled={loading || checking}
+              onClick={() => void loadSessionProducts()}
+              className="inline-flex h-11 items-center justify-center gap-2 rounded-[10px] border border-[#2da7ff]/45 bg-[#0a4fa3] px-5 text-[13px] font-black text-white transition hover:border-[#9ed7ff] disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {loading ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />} โหลดสินค้าและเช็ค
+            </button>
+            <button
+              type="button"
+              disabled={checking || loading || normalizedItems.length === 0}
+              onClick={() => void checkProducts()}
+              className="inline-flex h-11 items-center justify-center gap-2 rounded-[10px] border border-[#c7962d]/35 bg-[#f2bd4b] px-5 text-[13px] font-black text-[#160f04] transition hover:bg-[#ffd46c] disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {checking ? <Loader2 size={16} className="animate-spin" /> : <BarChart3 size={16} />} รีเช็คอันดับ
+            </button>
+          </div>
+
+          {error ? (
+            <div className="mt-4 rounded-[10px] border border-red-300/28 bg-red-500/12 px-4 py-3 text-[13px] font-bold text-red-100">
+              {error}
+            </div>
+          ) : null}
+
+          <div className="mt-4 grid gap-3 sm:grid-cols-4">
+            <div className="rounded-[10px] border border-[#2da7ff]/22 bg-black/22 px-4 py-3">
+              <div className="text-[11px] font-black text-[#9fb1c9]">สินค้าทั้งหมด</div>
+              <div className="mt-1 text-[24px] font-black text-white">{formatInt(normalizedItems.length)}</div>
+            </div>
+            <div className="rounded-[10px] border border-[#20c997]/24 bg-emerald-500/8 px-4 py-3">
+              <div className="text-[11px] font-black text-emerald-100">ติดอันดับ 1-10</div>
+              <div className="mt-1 text-[24px] font-black text-emerald-100">{formatInt(foundCount)}</div>
+            </div>
+            <div className="rounded-[10px] border border-[#c7962d]/24 bg-[#f2bd4b]/8 px-4 py-3">
+              <div className="text-[11px] font-black text-[#ffd46c]">ยังไม่ได้เช็ค</div>
+              <div className="mt-1 text-[24px] font-black text-[#ffd46c]">{formatInt(uncheckedCount)}</div>
+            </div>
+            <div className="rounded-[10px] border border-[#2da7ff]/22 bg-black/22 px-4 py-3">
+              <div className="text-[11px] font-black text-[#9fb1c9]">สถานะ</div>
+              <div className="mt-1 text-[15px] font-black text-white">{loading ? 'กำลังโหลดสินค้า' : checking ? 'กำลังเช็คอันดับ' : 'พร้อมใช้งาน'}</div>
+            </div>
+          </div>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-auto px-5 py-4">
+          {loading && normalizedItems.length === 0 ? (
+            <div className="grid min-h-[340px] place-items-center rounded-[14px] border border-[#2b7fc7]/28 bg-black/24 text-[14px] font-black text-[#bfe7ff]">
+              <span className="inline-flex items-center gap-2"><Loader2 size={18} className="animate-spin" /> กำลังดึงสินค้าในไลฟ์...</span>
+            </div>
+          ) : normalizedItems.length === 0 ? (
+            <div className="grid min-h-[340px] place-items-center rounded-[14px] border border-dashed border-[#c7962d]/28 bg-black/24 text-center text-[13px] font-bold text-[#9fb1c9]">
+              กรอก session หรือวางลิงก์ไลฟ์ แล้วกดโหลดสินค้าและเช็ค
+            </div>
+          ) : (
+            <div className="overflow-hidden rounded-[14px] border border-[#2b7fc7]/35 bg-[#030912]/72">
+              <div className="grid min-w-[1180px] grid-cols-[54px_74px_minmax(260px,1.6fr)_minmax(190px,1fr)_104px_90px_96px_88px_110px] items-center gap-3 border-b border-[#2b7fc7]/35 bg-[#06182e] px-4 py-3 text-[11px] font-black text-[#ffd46c]">
+                <span>ลำดับ</span>
+                <span>รูป</span>
+                <span>สินค้า</span>
+                <span>ลิงก์</span>
+                <span>อันดับจอ</span>
+                <span>คลัง</span>
+                <span>ราคาขาย</span>
+                <span>ขาย</span>
+                <span>สถานะ</span>
+              </div>
+              <div className="max-h-[52vh] min-w-[1180px] overflow-auto">
+                {normalizedItems.map((item, index) => {
+                  const key = basketItemKey(item);
+                  const detail = details.get(key);
+                  const ranking = rankings.get(key);
+                  const image = detail?.imageUrl || detail?.image || ranking?.previewImage || '';
+                  const title = detail?.name || `สินค้า ${item.item_id}`;
+                  const productUrl = detail?.url || item.url || `https://shopee.co.th/product/${item.shop_id || 0}/${item.item_id}`;
+                  const rankText = ranking?.error ? 'เช็กไม่ได้' : ranking?.screenRank ? `อันดับ ${ranking.screenRank}` : ranking ? 'ไม่ติดจอ' : '-';
+                  const rankClass = ranking?.error
+                    ? 'border-red-300/25 bg-red-500/12 text-red-100'
+                    : ranking?.screenRank
+                      ? 'border-emerald-300/30 bg-emerald-500/12 text-emerald-100'
+                      : ranking
+                        ? 'border-[#c7962d]/25 bg-[#f2bd4b]/10 text-[#ffd46c]'
+                        : 'border-[#2da7ff]/20 bg-black/24 text-[#9fb1c9]';
+                  return (
+                    <div key={`${key}:${index}`} className="grid grid-cols-[54px_74px_minmax(260px,1.6fr)_minmax(190px,1fr)_104px_90px_96px_88px_110px] items-center gap-3 border-b border-[#c7962d]/12 px-4 py-3 text-[12px] font-bold text-[#dce8f7] last:border-b-0">
+                      <div className="font-black tabular-nums text-[#ffd46c]">{index + 1}</div>
+                      <div className="h-14 w-14 overflow-hidden rounded-[10px] border border-[#c7962d]/25 bg-black/30">
+                        {image ? <img src={image} alt="" className="h-full w-full object-cover" /> : <div className="grid h-full place-items-center text-[#718199]"><ShoppingBag size={18} /></div>}
+                      </div>
+                      <div className="min-w-0">
+                        <div className="truncate text-[13px] font-black text-white" title={title}>{title}</div>
+                        <div className="mt-1 text-[10px] text-[#718199]">shop {item.shop_id || '-'} • item {item.item_id}</div>
+                        {ranking?.error ? <div className="mt-1 truncate text-[10px] text-red-100" title={ranking.error}>{ranking.error}</div> : null}
+                      </div>
+                      <a href={productUrl} target="_blank" rel="noreferrer" className="inline-flex min-w-0 items-center gap-2 text-[#9ed7ff] hover:text-[#ffd46c]">
+                        <ExternalLink size={13} />
+                        <span className="truncate">{productUrl}</span>
+                      </a>
+                      <span className={`inline-flex h-8 items-center justify-center rounded-full border px-3 text-[11px] font-black ${rankClass}`}>{rankText}</span>
+                      <span className="tabular-nums text-white">{detail?.stock == null ? '-' : formatInt(detail.stock)}</span>
+                      <span className="tabular-nums text-[#ffd46c]">{detail ? formatMoney(detail.price ?? detail.priceMin ?? 0) : '-'}</span>
+                      <span className="tabular-nums text-white">{detail?.sold == null ? '-' : formatInt(detail.sold)}</span>
+                      <span className="text-[#9fb1c9]">{ranking ? `${ranking.sessionCount || 0} live` : checking ? 'กำลังเช็ค' : '-'}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function AccountTable({
   rows,
   proxies,
@@ -257,6 +529,7 @@ export function AccountTable({
 }: AccountTableProps) {
   const [page, setPage] = useState(1);
   const [pendingDeleteAccount, setPendingDeleteAccount] = useState<LiveChannel | null>(null);
+  const [rankingTarget, setRankingTarget] = useState<{ row: LiveChannel; sessionId?: string | null } | null>(null);
   const [copyToast, setCopyToast] = useState<string | null>(null);
   const copyToastTimer = useRef<number | null>(null);
   const proxyMap = useMemo(
@@ -299,6 +572,13 @@ export function AccountTable({
             </div>
           </div>
         </div>
+      ) : null}
+      {rankingTarget ? (
+        <ScreenRankingDialog
+          row={rankingTarget.row}
+          sessionId={rankingTarget.sessionId ?? rankingTarget.row.liveSessionId ?? null}
+          onClose={() => setRankingTarget(null)}
+        />
       ) : null}
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-2 text-[12px] font-black text-[#9fb1c9]">
@@ -355,6 +635,7 @@ export function AccountTable({
                 disabled={saving}
                 onCookieCopied={showCopyToast}
                 onEdit={onEdit}
+                onOpenRanking={(row, sessionId) => setRankingTarget({ row, sessionId })}
                 onToggleStatus={onToggleStatus}
                 onRemove={(id) => { const target = rows.find((item) => item.id === id) ?? null; setPendingDeleteAccount(target); }}
               />

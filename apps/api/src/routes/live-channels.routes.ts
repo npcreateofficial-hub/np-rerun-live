@@ -321,6 +321,12 @@ const productDetailsSchema = z.object({
   }).passthrough()).optional(),
 });
 
+const sessionItemsSchema = z.object({
+  cookie: z.string().nullish(),
+  sessionId: z.string().nullish(),
+  liveUrl: z.string().nullish(),
+});
+
 function productDetailsInputFromBody(body: z.infer<typeof productDetailsSchema>) {
   const links = [body.productUrl, ...(body.productUrls ?? [])]
     .map((item) => String(item || '').trim())
@@ -414,6 +420,20 @@ liveChannelsRouter.get(
     const sessionId = requireShopeeLiveSession(channel);
     const result = await shopee.basketItems(channel.cookie!, sessionId);
     return ok(res, result, 'โหลดสินค้าในตะกร้า Shopee Live สำเร็จ');
+  }),
+);
+
+liveChannelsRouter.post(
+  '/:id/session-items',
+  asyncHandler(async (req: AuthedRequest, res) => {
+    const channel = await ownedChannel(req.userId!, req.params.id);
+    requireShopeeCookie(channel);
+    const body = sessionItemsSchema.parse(req.body);
+    const sessionId = parseShopeeLiveSessionId(body.sessionId ?? body.liveUrl ?? channel.liveSessionId ?? null);
+    if (!sessionId) throw new AppError('กรุณาระบุ Session ID สำหรับดึงสินค้าในไลฟ์', 400);
+    const cookie = body.cookie?.trim() || channel.cookie!;
+    const result = await shopee.basketItems(cookie, sessionId);
+    return ok(res, result, 'โหลดสินค้าในไลฟ์จาก session สำเร็จ');
   }),
 );
 
