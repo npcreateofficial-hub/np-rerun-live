@@ -84,6 +84,31 @@ function rankingKey(item: Pick<ShopeeScreenRankingItem, 'shopId' | 'itemId'>) {
   return `${Number(item.shopId) || 0}:${Number(item.itemId) || 0}`;
 }
 
+function basketText(item: ShopeeBasketItem, keys: string[]) {
+  for (const key of keys) {
+    const value = item[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  }
+  return '';
+}
+
+function basketNumber(item: ShopeeBasketItem, keys: string[]) {
+  for (const key of keys) {
+    const value = item[key];
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+function shopeeImageUrl(value: string) {
+  const clean = value.trim();
+  if (!clean) return '';
+  if (/^https?:\/\//i.test(clean)) return clean;
+  return `https://down-th.img.susercontent.com/file/${clean}`;
+}
+
 function LiveTimer({ startedAt, baseSeconds, online }: { startedAt?: string | null; baseSeconds?: number | null; online: boolean }) {
   const [now, setNow] = useState(() => Date.now());
 
@@ -345,7 +370,7 @@ function ScreenRankingDialog({
     setChecking(true);
     setError(null);
     try {
-      const [detailResult, rankingResult] = await Promise.all([
+      const [detailResult, rankingResult] = await Promise.allSettled([
         accountService.productDetails(row.id, {
           cookie: row.cookie ?? null,
           items: cleanItems,
@@ -357,9 +382,23 @@ function ScreenRankingDialog({
         }),
       ]);
 
-      setDetails(new Map((detailResult.items ?? []).map((item) => [detailKey(item), item])));
-      setRankings(new Map((rankingResult.items ?? []).map((item) => [rankingKey(item), item])));
-      if (rankingResult.sessionId && rankingResult.sessionId !== targetSession) setSessionInput(rankingResult.sessionId);
+      if (detailResult.status === 'fulfilled') {
+        setDetails(new Map((detailResult.value.items ?? []).map((item) => [detailKey(item), item])));
+      } else {
+        setDetails(new Map());
+      }
+      if (rankingResult.status === 'fulfilled') {
+        setRankings(new Map((rankingResult.value.items ?? []).map((item) => [rankingKey(item), item])));
+        if (rankingResult.value.sessionId && rankingResult.value.sessionId !== targetSession) setSessionInput(rankingResult.value.sessionId);
+      } else {
+        setRankings(new Map());
+      }
+
+      const messages = [
+        detailResult.status === 'rejected' ? 'รายละเอียดสินค้าบางส่วนดึงไม่ได้ จะแสดงข้อมูลจากตะกร้าแทน' : '',
+        rankingResult.status === 'rejected' ? 'อันดับจอยังเช็คไม่ได้ กรุณาลองรีเช็คอีกครั้ง' : '',
+      ].filter(Boolean);
+      if (messages.length) setError(messages.join(' • '));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'เช็คอันดับจอไม่สำเร็จ');
     } finally {
@@ -480,9 +519,13 @@ function ScreenRankingDialog({
                   const key = basketItemKey(item);
                   const detail = details.get(key);
                   const ranking = rankings.get(key);
-                  const image = detail?.imageUrl || detail?.image || ranking?.previewImage || '';
-                  const title = detail?.name || `สินค้า ${item.item_id}`;
+                  const basketImage = basketText(item, ['image_url', 'imageUrl', 'image', 'cover', 'cover_image']);
+                  const image = detail?.imageUrl || detail?.image || ranking?.previewImage || (basketImage ? shopeeImageUrl(basketImage) : '');
+                  const title = detail?.name || basketText(item, ['name', 'title', 'item_name', 'itemName']) || `สินค้า ${item.item_id}`;
                   const productUrl = detail?.url || item.url || `https://shopee.co.th/product/${item.shop_id || 0}/${item.item_id}`;
+                  const stock = detail?.stock ?? basketNumber(item, ['stock', 'normal_stock', 'total_stock', 'available_stock']);
+                  const price = detail?.price ?? detail?.priceMin ?? basketNumber(item, ['price', 'price_min', 'priceMin', 'price_max', 'priceMax']);
+                  const sold = detail?.sold ?? basketNumber(item, ['sold', 'historical_sold', 'sold_count', 'soldCount']);
                   const rankText = ranking?.error ? 'เช็กไม่ได้' : ranking?.screenRank ? `อันดับ ${ranking.screenRank}` : ranking ? 'ไม่ติดจอ' : '-';
                   const rankClass = ranking?.error
                     ? 'border-red-300/25 bg-red-500/12 text-red-100'
@@ -507,9 +550,9 @@ function ScreenRankingDialog({
                         <span className="truncate">{productUrl}</span>
                       </a>
                       <span className={`inline-flex h-8 items-center justify-center rounded-full border px-3 text-[11px] font-black ${rankClass}`}>{rankText}</span>
-                      <span className="tabular-nums text-white">{detail?.stock == null ? '-' : formatInt(detail.stock)}</span>
-                      <span className="tabular-nums text-[#ffd46c]">{detail ? formatMoney(detail.price ?? detail.priceMin ?? 0) : '-'}</span>
-                      <span className="tabular-nums text-white">{detail?.sold == null ? '-' : formatInt(detail.sold)}</span>
+                      <span className="tabular-nums text-white">{stock == null ? '-' : formatInt(stock)}</span>
+                      <span className="tabular-nums text-[#ffd46c]">{price == null ? '-' : formatMoney(price)}</span>
+                      <span className="tabular-nums text-white">{sold == null ? '-' : formatInt(sold)}</span>
                       <span className="text-[#9fb1c9]">{ranking ? `${ranking.sessionCount || 0} live` : checking ? 'กำลังเช็ค' : '-'}</span>
                     </div>
                   );
