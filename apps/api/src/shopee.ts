@@ -5347,7 +5347,7 @@ function normalizeScreenRankingItem(
   const tc = readTcLevel(first?.session_url || first?.play_url || '');
   const metrics = readRankingMetrics(first?.recommendation_info);
   const matchedCurrentLive = matchedIndex >= 0 && matchedIndex < 10;
-  const shouldShowUnavailableAsNotOnScreen = Boolean(error && /403|Failed to fetch|HTTP\s*403|ปฏิเสธ API/i.test(error));
+  const shouldShowUnavailableAsNotOnScreen = Boolean(error && /Failed to fetch/i.test(error));
   return {
     shopId: Number(item.shop_id) || 0,
     itemId: Number(item.item_id) || 0,
@@ -5401,6 +5401,9 @@ async function fetchShopeePdpRankingViaPageContext(
       userAgent: process.env.SHOPEE_DESKTOP_USER_AGENT || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36',
     }, 5_000)
     .catch(() => undefined);
+  const captured = await captureShopeePdpRankingFromProductPage(client, url || canonicalUrl, item);
+  if (captured) return captured;
+
   await navigateCdp(client, 'https://shopee.co.th/#spl-action=check_live_info', 2_500);
   try {
     const response = await pageContextFetchUrl(
@@ -5435,6 +5438,66 @@ async function fetchShopeePdpRankingViaPageContext(
     );
     return (dataOf(unwrapShopeeTuple(response)) || response?.data || response) as Record<string, any> | null;
   }
+}
+
+async function captureShopeePdpRankingFromProductPage(
+  client: CdpClient,
+  productUrl: string,
+  item: ShopeeBasketItem,
+): Promise<Record<string, any> | null> {
+  const shopId = Number(item.shop_id);
+  const itemId = Number(item.item_id);
+  const fallbackUrl = Number.isSafeInteger(shopId) && Number.isSafeInteger(itemId) && shopId > 0 && itemId > 0
+    ? `https://shopee.co.th/-i.${shopId}.${itemId}`
+    : productUrl;
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (payload: Record<string, any> | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(payload);
+    };
+    const readPayload = (text: string) => {
+      if (settled || !text || !/session_infos|shop_detailed/i.test(text)) return;
+      try {
+        const parsed = JSON.parse(text);
+        const data = dataOf(unwrapShopeeTuple(parsed)) || parsed?.data || parsed;
+        const sessions = data?.shop_detailed?.session_infos;
+        if (Array.isArray(sessions)) finish(data);
+      } catch {
+        // Ignore non-JSON responses.
+      }
+    };
+    const timer = setTimeout(() => finish(null), 8_000);
+
+    client.onMessage((message) => {
+      if (settled || message.method !== 'Network.responseReceived') return;
+      const responseUrl = String(message.params?.response?.url || '');
+      if (!/shopee/i.test(responseUrl)) return;
+      if (!/shopee\.co\.th\/api\/v4\/pdp\/get_pc|shopee\.co\.th\/api\/v4\/item\/get|session|recommend|live|pdp|item/i.test(responseUrl)) return;
+      void client
+        .send<{ body?: string; base64Encoded?: boolean }>('Network.getResponseBody', {
+          requestId: message.params.requestId,
+        })
+        .then((body) => {
+          const text = body.base64Encoded
+            ? Buffer.from(body.body || '', 'base64').toString('utf8')
+            : String(body.body || '');
+          readPayload(text);
+        })
+        .catch(() => undefined);
+    });
+
+    void client.send('Network.clearBrowserCache', {}, 5_000).catch(() => undefined);
+    void client.send('Page.navigate', { url: fallbackUrl || productUrl }, 10_000).catch(() => undefined);
+    if (productUrl && productUrl !== fallbackUrl) {
+      setTimeout(() => {
+        if (!settled) void client.send('Page.navigate', { url: productUrl }, 10_000).catch(() => undefined);
+      }, 4_000);
+    }
+  });
 }
 
 async function liveProductScreenRankings(
