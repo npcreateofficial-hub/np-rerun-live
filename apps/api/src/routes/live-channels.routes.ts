@@ -427,57 +427,100 @@ liveChannelsRouter.post(
   '/:id/session-items',
   asyncHandler(async (req: AuthedRequest, res) => {
     const channel = await ownedChannel(req.userId!, req.params.id);
-    requireShopeeCookie(channel);
+    if (channel.platform !== 'SHOPEE') throw new AppError('บัญชีนี้ไม่ใช่ Shopee', 400);
     const body = sessionItemsSchema.parse(req.body);
     const sessionId = parseShopeeLiveSessionId(body.sessionId ?? body.liveUrl ?? channel.liveSessionId ?? null);
     if (!sessionId) throw new AppError('กรุณาระบุ Session ID สำหรับดึงสินค้าในไลฟ์', 400);
-    const primaryCookie = body.cookie?.trim() || channel.cookie!;
-    let lastError: unknown = null;
-    let result = await shopee.basketItems(primaryCookie, sessionId).catch((error) => {
-      lastError = error;
-      return null;
+
+    const cookieChannels = await prisma.liveChannel.findMany({
+      where: {
+        userId: req.userId!,
+        platform: 'SHOPEE',
+        cookie: { not: null },
+      },
+      orderBy: [
+        { id: channel.id ? 'desc' : 'asc' },
+        { isOnline: 'desc' },
+        { updatedAt: 'desc' },
+      ] as any,
     });
 
-    if (!result?.items?.length) {
-      const fallbackChannels = await prisma.liveChannel.findMany({
-        where: {
-          userId: req.userId!,
-          platform: 'SHOPEE',
-          cookie: { not: null },
-          id: { not: channel.id },
-        },
-        orderBy: [
-          { isOnline: 'desc' },
-          { updatedAt: 'desc' },
-        ],
-        take: 8,
-      });
+    const candidates: Array<{ cookie: string; channelId: string; accountName: string; source: string }> = [];
+    const seenCookies = new Set<string>();
+    const pushCandidate = (cookie: string | null | undefined, channelId: string, accountName: string, source: string) => {
+      const cleanCookie = cookie?.trim();
+      if (!cleanCookie || seenCookies.has(cleanCookie)) return;
+      seenCookies.add(cleanCookie);
+      candidates.push({ cookie: cleanCookie, channelId, accountName, source });
+    };
+    pushCandidate(body.cookie, channel.id, channel.accountName ?? channel.name, 'current-form-cookie');
+    pushCandidate(channel.cookie, channel.id, channel.accountName ?? channel.name, 'selected-account-cookie');
+    for (const cookieChannel of cookieChannels) {
+      pushCandidate(cookieChannel.cookie, cookieChannel.id, cookieChannel.accountName ?? cookieChannel.name, 'account-cookie-pool');
+    }
 
-      for (const fallbackChannel of fallbackChannels) {
-        if (!fallbackChannel.cookie) continue;
-        const fallbackResult = await shopee.basketItems(fallbackChannel.cookie, sessionId).catch((error) => {
-          lastError = error;
-          return null;
-        });
-        if (fallbackResult?.items?.length) {
+    if (!candidates.length) {
+      throw new AppError('ยังไม่มีคุกกี้ Shopee สำหรับดึงข้อมูล กรุณาอัปเดตคุกกี้อย่างน้อย 1 บัญชี', 400);
+    }
+
+    const attempts: Array<{ accountName: string; source: string; ok: boolean; total: number; error?: string }> = [];
+    let result: Awaited<ReturnType<typeof shopee.basketItems>> | null = null;
+    let bestEmptyResult: Awaited<ReturnType<typeof shopee.basketItems>> | null = null;
+
+    for (const candidate of candidates) {
+      try {
+        const next = await shopee.basketItems(candidate.cookie, sessionId);
+        attempts.push({ accountName: candidate.accountName, source: candidate.source, ok: true, total: next.items.length });
+        if (next.items.length) {
           result = {
-            ...fallbackResult,
+            ...next,
             raw: {
-              source: 'fallback-channel-cookie',
-              channelId: fallbackChannel.id,
-              accountName: fallbackChannel.accountName ?? fallbackChannel.name,
-              raw: fallbackResult.raw,
+              source: candidate.source,
+              channelId: candidate.channelId,
+              accountName: candidate.accountName,
+              attempts,
+              raw: next.raw,
             },
           };
           break;
         }
+        bestEmptyResult = bestEmptyResult ?? {
+          ...next,
+          raw: {
+            source: candidate.source,
+            channelId: candidate.channelId,
+            accountName: candidate.accountName,
+            attempts,
+            raw: next.raw,
+          },
+        };
+      } catch (error) {
+        attempts.push({
+          accountName: candidate.accountName,
+          source: candidate.source,
+          ok: false,
+          total: 0,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     }
 
-    if (!result) {
-      throw lastError instanceof Error ? lastError : new AppError('โหลดสินค้าในไลฟ์จาก session ไม่สำเร็จ', 502);
+    if (!result && !bestEmptyResult) {
+      const names = attempts.map((item) => item.accountName).filter(Boolean).join(', ');
+      throw new AppError(
+        `คุกกี้ Shopee ที่มีอยู่ยังดึงข้อมูลไม่ได้${names ? ` (${names})` : ''} กรุณาอัปเดตคุกกี้ใหม่`,
+        400,
+        { attempts },
+      );
     }
 
+    result = result ?? {
+      ...bestEmptyResult!,
+      raw: {
+        ...((bestEmptyResult!.raw && typeof bestEmptyResult!.raw === 'object') ? bestEmptyResult!.raw : {}),
+        attempts,
+      },
+    };
     return ok(res, result, result.items.length ? 'โหลดสินค้าในไลฟ์จาก session สำเร็จ' : 'ไม่พบสินค้าใน session นี้');
   }),
 );

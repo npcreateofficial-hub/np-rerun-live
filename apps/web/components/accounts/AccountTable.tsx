@@ -271,6 +271,7 @@ function ScreenRankingDialog({
   const [loading, setLoading] = useState(false);
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [cookieNote, setCookieNote] = useState<string | null>(null);
 
   const normalizedItems = useMemo(() => items
     .map((item) => ({
@@ -295,17 +296,29 @@ function ScreenRankingDialog({
     setItems([]);
     setDetails(new Map());
     setRankings(new Map());
+    setCookieNote(null);
     try {
       const basket = await accountService.sessionItems(row.id, {
         sessionId: targetSession,
         liveUrl: targetSession,
         cookie: row.cookie ?? null,
       });
+      const raw = basket.raw && typeof basket.raw === 'object' ? basket.raw as Record<string, any> : null;
+      const accountName = raw?.accountName ? String(raw.accountName) : '';
+      const attempts = Array.isArray(raw?.attempts) ? raw.attempts : [];
+      const failedAttempts = attempts.filter((item: any) => item && item.ok === false);
+      if (accountName) {
+        setCookieNote(`ใช้คุกกี้จากบัญชี ${accountName} ในการดึงสินค้า`);
+      } else if (failedAttempts.length) {
+        setCookieNote(`คุกกี้บางบัญชีใช้ไม่ได้ กรุณาอัปเดตคุกกี้บัญชี: ${failedAttempts.map((item: any) => item.accountName).filter(Boolean).join(', ')}`);
+      }
       const nextItems = (basket.items ?? []).slice(0, 200);
       setSessionInput(basket.sessionId || targetSession);
       setItems(nextItems);
       if (!nextItems.length) {
-        setError('ไม่พบสินค้าใน session นี้');
+        setError(failedAttempts.length
+          ? 'ยังดึงสินค้าไม่ได้จากคุกกี้ที่มี กรุณาอัปเดตคุกกี้บัญชี Shopee แล้วลองใหม่'
+          : 'ไม่พบสินค้าใน session นี้');
         return;
       }
       await checkProducts(nextItems, basket.sessionId || targetSession);
@@ -412,6 +425,11 @@ function ScreenRankingDialog({
           {error ? (
             <div className="mt-4 rounded-[10px] border border-red-300/28 bg-red-500/12 px-4 py-3 text-[13px] font-bold text-red-100">
               {error}
+            </div>
+          ) : null}
+          {cookieNote ? (
+            <div className="mt-4 rounded-[10px] border border-[#2da7ff]/26 bg-[#2da7ff]/10 px-4 py-3 text-[13px] font-bold text-[#bfe7ff]">
+              {cookieNote}
             </div>
           ) : null}
 
