@@ -372,7 +372,26 @@ liveChannelsRouter.post(
   asyncHandler(async (req: AuthedRequest, res) => {
     const channel = await ownedChannel(req.userId!, req.params.id);
     requireShopeeCookie(channel);
-    const sessionId = parseShopeeLiveSessionId(channel.liveSessionId ?? null);
+    let sessionId = parseShopeeLiveSessionId(channel.liveSessionId ?? null);
+    if (!sessionId) {
+      const liveChannel = await prisma.liveChannel.findFirst({
+        where: {
+          userId: req.userId!,
+          platform: channel.platform,
+          liveSessionId: { not: null },
+          OR: [
+            channel.platformUid ? { platformUid: channel.platformUid } : undefined,
+            channel.accountName ? { accountName: channel.accountName } : undefined,
+            channel.name ? { name: channel.name } : undefined,
+          ].filter(Boolean) as any,
+        },
+        orderBy: [
+          { isOnline: 'desc' },
+          { updatedAt: 'desc' },
+        ],
+      });
+      sessionId = parseShopeeLiveSessionId(liveChannel?.liveSessionId ?? null);
+    }
     const body = productDetailsSchema.parse(req.body);
     const { items, links } = productDetailsInputFromBody(body);
     if (!items.length && !links.length) throw new AppError('กรุณาส่งลิงก์สินค้า หรือ shopId/itemId หรือ items', 400);

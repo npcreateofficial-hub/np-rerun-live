@@ -5387,11 +5387,28 @@ async function liveProductScreenRankings(
 
     let sessionId = liveSessionId?.trim() || null;
     if (!sessionId) {
-      const payload = (await shopeePageContextFetch(client, '/api/v1/session', { timeoutMs: 10_000 })).json;
-      assertShopeePageOk(payload, 'load session');
-      sessionId = readSessionId(payload);
+      try {
+        const payload = (await shopeePageContextFetch(client, '/api/v1/session', { timeoutMs: 10_000 })).json;
+        assertShopeePageOk(payload, 'load session');
+        sessionId = readSessionId(payload);
+      } catch {
+        sessionId = null;
+      }
     }
-    if (!sessionId) throw new AppError('ไม่พบ Shopee Live session สำหรับเช็กอันดับจอ', 502);
+    if (!sessionId) {
+      return {
+        sessionId: null,
+        items: dedupeShopeeBasketItems(resolvedItems).map((item) =>
+          normalizeScreenRankingItem(
+            item,
+            item.url || `https://shopee.co.th/product/${item.shop_id}/${item.item_id}`,
+            null,
+            null,
+            null,
+          ),
+        ),
+      };
+    }
 
     const results: ShopeeScreenRankingItem[] = [];
     for (const item of dedupeShopeeBasketItems(resolvedItems)) {
