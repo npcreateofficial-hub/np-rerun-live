@@ -5332,14 +5332,19 @@ async function liveProductScreenRankings(
     const resolvedItems: ShopeeBasketItem[] = [...cleanItems];
     for (const link of cleanLinks) {
       if (resolvedItems.some((item) => item.url === link)) continue;
-      const parsed = productPairFromUrl(link);
-      let resolved = parsed;
-      if (!resolved && isShopeeShortLink(link)) {
-        const expandedUrl = (await fetchShopeeRedirectUrl(link, 'HEAD')) || (await fetchShopeeRedirectUrl(link, 'GET'));
-        resolved = expandedUrl ? productPairFromUrl(expandedUrl) : null;
+      let resolved: ShopeeBasketItem | null = null;
+      let resolveError: string | null = null;
+      try {
+        resolved = productPairFromUrl(link);
+        if (!resolved && isShopeeShortLink(link)) {
+          const expandedUrl = (await fetchShopeeRedirectUrl(link, 'HEAD').catch(() => null)) || (await fetchShopeeRedirectUrl(link, 'GET').catch(() => null));
+          resolved = expandedUrl ? productPairFromUrl(expandedUrl) : null;
+        }
+        if (!resolved) resolved = await resolveShopeeLinkViaBrowserContext(client, link).catch(() => null);
+      } catch (err) {
+        resolveError = cleanShopeeRuntimeErrorText(err instanceof Error ? err.message : String(err));
       }
-      if (!resolved) resolved = await resolveShopeeLinkViaBrowserContext(client, link).catch(() => null);
-      resolvedItems.push(resolved ? { ...resolved, url: link } : { shop_id: 0, item_id: 0, url: link });
+      resolvedItems.push(resolved ? { ...resolved, url: link } : { shop_id: 0, item_id: 0, url: link, error: resolveError || 'แปลงลิงก์นี้เป็นสินค้า Shopee ไม่ได้' });
     }
 
     const sessionId = liveSessionId?.trim() || null;
