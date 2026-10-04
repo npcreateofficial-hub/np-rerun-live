@@ -108,7 +108,6 @@ function AccountRow({
   disabled,
   onCookieCopied,
   onEdit,
-  onOpenRanking,
   onToggleStatus,
   onRemove,
 }: {
@@ -117,7 +116,6 @@ function AccountRow({
   disabled?: boolean;
   onCookieCopied: () => void;
   onEdit: (row: LiveChannel) => Promise<void> | void;
-  onOpenRanking: (row: LiveChannel, sessionId?: string | null) => void;
   onToggleStatus: (id: string, isOnline: boolean) => Promise<void> | void;
   onRemove: (id: string) => Promise<void> | void;
 }) {
@@ -234,14 +232,6 @@ function AccountRow({
           >
             {startingLive ? <Loader2 size={13} className="animate-spin" /> : row.isOnline ? <StopCircle size={13} /> : <PlayCircle size={13} />}
             {startingLive ? 'กำลังเริ่ม' : row.isOnline ? 'หยุด' : 'ขึ้นไลฟ์'}
-          </button>
-          <button
-            type="button"
-            disabled={disabled}
-            onClick={() => onOpenRanking(row, activeSessionId)}
-            className="inline-flex h-8 w-[92px] shrink-0 items-center justify-center gap-1.5 rounded-[8px] border border-[#2da7ff]/45 bg-[#071f3d] px-2 text-[11px] font-black text-[#9ed7ff] transition hover:border-[#f2bd4b]/60 hover:text-[#ffd46c] disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <BarChart3 size={13} /> อันดับจอ
           </button>
           <button
             type="button"
@@ -590,15 +580,28 @@ export function AccountTable({
           </span>
         </div>
 
-        <label className="relative w-full sm:w-[340px] sm:max-w-full">
-          <Search className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-[#718199]" size={15} />
-          <input
-            value={query}
-            onChange={(event) => onQueryChange(event.target.value)}
-            className="h-10 w-full rounded-[10px] border border-[#c7962d]/34 bg-[#030912]/75 pl-10 pr-3 text-[12px] text-white outline-none placeholder:text-[#718199] focus:border-[#2da7ff]/70 focus:shadow-[0_0_0_3px_rgba(45,167,255,.14)]"
-            placeholder="ค้นหาชื่อบัญชี, ประเภท, สถานะ..."
-          />
-        </label>
+        <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
+          <button
+            type="button"
+            disabled={pageRows.length === 0}
+            onClick={() => {
+              const target = pageRows.find((item) => item.isOnline) ?? pageRows[0] ?? null;
+              if (target) setRankingTarget({ row: target, sessionId: target.liveSessionId ?? null });
+            }}
+            className="inline-flex h-10 items-center justify-center gap-2 rounded-[10px] border border-[#2da7ff]/45 bg-[#071f3d] px-4 text-[12px] font-black text-[#9ed7ff] transition hover:border-[#f2bd4b]/60 hover:text-[#ffd46c] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <BarChart3 size={15} /> ดึงอันดับจอ
+          </button>
+          <label className="relative w-full sm:w-[340px] sm:max-w-full">
+            <Search className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-[#718199]" size={15} />
+            <input
+              value={query}
+              onChange={(event) => onQueryChange(event.target.value)}
+              className="h-10 w-full rounded-[10px] border border-[#c7962d]/34 bg-[#030912]/75 pl-10 pr-3 text-[12px] text-white outline-none placeholder:text-[#718199] focus:border-[#2da7ff]/70 focus:shadow-[0_0_0_3px_rgba(45,167,255,.14)]"
+              placeholder="ค้นหาชื่อบัญชี, ประเภท, สถานะ..."
+            />
+          </label>
+        </div>
       </div>
 
       {loading ? (
@@ -635,7 +638,6 @@ export function AccountTable({
                 disabled={saving}
                 onCookieCopied={showCopyToast}
                 onEdit={onEdit}
-                onOpenRanking={(row, sessionId) => setRankingTarget({ row, sessionId })}
                 onToggleStatus={onToggleStatus}
                 onRemove={(id) => { const target = rows.find((item) => item.id === id) ?? null; setPendingDeleteAccount(target); }}
               />
