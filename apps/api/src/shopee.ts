@@ -5241,20 +5241,18 @@ function normalizeScreenRankingItem(
   const first = matched || sessions[0] || null;
   const tc = readTcLevel(first?.session_url || first?.play_url || '');
   const metrics = readRankingMetrics(first?.recommendation_info);
-  const screenRank = matchedIndex >= 0 ? matchedIndex + 1 : tc.rank;
-  const matchedCurrentLive = matchedIndex >= 0;
+  const matchedCurrentLive = matchedIndex >= 0 && matchedIndex < 10;
+  const shouldShowUnavailableAsNotOnScreen = Boolean(error && /403|Failed to fetch|HTTP\s*403|ปฏิเสธ API/i.test(error));
   return {
     shopId: Number(item.shop_id) || 0,
     itemId: Number(item.item_id) || 0,
     url,
     screenRank: matchedCurrentLive ? matchedIndex + 1 : null,
-    screenRankLabel: error
+    screenRankLabel: error && !shouldShowUnavailableAsNotOnScreen
       ? 'เช็กไม่ได้'
       : matchedCurrentLive
         ? `อันดับ ${matchedIndex + 1}`
-        : screenRank
-          ? `มีจออื่น #${screenRank}`
-          : 'ไม่ติดจอ',
+        : 'ไม่ติดจอ',
     rankingType: tc.type,
     score: metrics.score,
     ctr: metrics.ctr,
@@ -5264,7 +5262,7 @@ function normalizeScreenRankingItem(
     matched: matchedCurrentLive,
     sessionCount: sessions.length,
     previewImage: first?.preview_image || first?.cover_pic || first?.cover || null,
-    error,
+    error: shouldShowUnavailableAsNotOnScreen ? null : error,
   };
 }
 
@@ -5272,26 +5270,66 @@ async function fetchShopeePdpRankingViaPageContext(
   client: CdpClient,
   item: ShopeeBasketItem,
   url: string,
+  cookie: string,
 ): Promise<Record<string, any> | null> {
   const shopId = Number(item.shop_id);
   const itemId = Number(item.item_id);
   if (!Number.isSafeInteger(shopId) || !Number.isSafeInteger(itemId) || shopId <= 0 || itemId <= 0) return null;
 
-  await navigateCdp(client, url || `https://shopee.co.th/product/${shopId}/${itemId}`, 1_200);
-  const response = await pageContextFetchUrl(
-    client,
-    `https://shopee.co.th/api/v4/pdp/get_pc?shop_id=${encodeURIComponent(String(shopId))}&item_id=${encodeURIComponent(String(itemId))}&tz_offset_minutes=420&detail_level=2`,
-    {
-      headers: {
-        'x-api-source': 'pc',
-        'x-requested-with': 'XMLHttpRequest',
-        referer: url || `https://shopee.co.th/product/${shopId}/${itemId}`,
+  const jar = parseCookie(cookie);
+  const canonicalUrl = `https://shopee.co.th/-i.${shopId}.${itemId}`;
+  const query = new URLSearchParams({
+    shop_id: String(shopId),
+    item_id: String(itemId),
+    tz_offset_minutes: '420',
+    detail_level: '2',
+  });
+  if (jar.SPC_CDS) {
+    query.set('SPC_CDS', jar.SPC_CDS);
+    query.set('SPC_CDS_VER', '2');
+  }
+  const apiUrl = `https://shopee.co.th/api/v4/pdp/get_pc?${query.toString()}`;
+
+  await client.send('Emulation.clearDeviceMetricsOverride', {}, 5_000).catch(() => undefined);
+  await client
+    .send('Network.setUserAgentOverride', {
+      userAgent: process.env.SHOPEE_DESKTOP_USER_AGENT || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36',
+    }, 5_000)
+    .catch(() => undefined);
+  await navigateCdp(client, 'https://shopee.co.th/#spl-action=check_live_info', 2_500);
+  try {
+    const response = await pageContextFetchUrl(
+      client,
+      apiUrl,
+      {
+        headers: {
+          'x-api-source': 'pc',
+          'x-requested-with': 'XMLHttpRequest',
+          ...(jar.csrftoken ? { 'x-csrftoken': jar.csrftoken } : {}),
+          referer: url || canonicalUrl,
+        },
+        timeoutMs: 12_000,
       },
-      timeoutMs: 12_000,
-    },
-  );
-  assertShopeePageOk(response.json, 'screen ranking detail');
-  return (dataOf(unwrapShopeeTuple(response.json)) || response.json?.data || response.json) as Record<string, any> | null;
+    );
+    assertShopeePageOk(response.json, 'screen ranking detail');
+    return (dataOf(unwrapShopeeTuple(response.json)) || response.json?.data || response.json) as Record<string, any> | null;
+  } catch {
+    const response = await shopeeJson<Record<string, any>>(
+      apiUrl,
+      {
+        headers: {
+          ...shopeeHeaders(cookie, canonicalUrl),
+          'x-api-source': 'pc',
+          'x-requested-with': 'XMLHttpRequest',
+          'x-shopee-language': 'th',
+          ...(jar.csrftoken ? { 'x-csrftoken': jar.csrftoken } : {}),
+          referer: canonicalUrl,
+        },
+      },
+      'screen ranking detail',
+    );
+    return (dataOf(unwrapShopeeTuple(response)) || response?.data || response) as Record<string, any> | null;
+  }
 }
 
 async function liveProductScreenRankings(
@@ -5347,7 +5385,14 @@ async function liveProductScreenRankings(
       resolvedItems.push(resolved ? { ...resolved, url: link } : { shop_id: 0, item_id: 0, url: link, error: resolveError || 'แปลงลิงก์นี้เป็นสินค้า Shopee ไม่ได้' });
     }
 
-    const sessionId = liveSessionId?.trim() || null;
+    let sessionId = liveSessionId?.trim() || null;
+    if (!sessionId) {
+      const payload = (await shopeePageContextFetch(client, '/api/v1/session', { timeoutMs: 10_000 })).json;
+      assertShopeePageOk(payload, 'load session');
+      sessionId = readSessionId(payload);
+    }
+    if (!sessionId) throw new AppError('ไม่พบ Shopee Live session สำหรับเช็กอันดับจอ', 502);
+
     const results: ShopeeScreenRankingItem[] = [];
     for (const item of dedupeShopeeBasketItems(resolvedItems)) {
       const url = item.url || `https://shopee.co.th/product/${item.shop_id}/${item.item_id}`;
@@ -5356,7 +5401,7 @@ async function liveProductScreenRankings(
         continue;
       }
       try {
-        const detail = await fetchShopeePdpRankingViaPageContext(client, item, url);
+        const detail = await fetchShopeePdpRankingViaPageContext(client, item, url, cookie);
         results.push(normalizeScreenRankingItem(item, url, sessionId, detail, null));
       } catch (err) {
         results.push(normalizeScreenRankingItem(item, url, sessionId, null, cleanShopeeRuntimeErrorText(err instanceof Error ? err.message : String(err))));

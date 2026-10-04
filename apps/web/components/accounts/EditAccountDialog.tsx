@@ -866,13 +866,15 @@ const syncBasketProductRows = async () => {
 
   const syncBasketScreenRankings = async () => {
     if (!account) return;
-    const links = basketLinks.split(/\r?\n/).map((item) => item.trim()).filter(Boolean).slice(0, 200);
-    if (!links.length && !basketProducts.length) {
+    const selectedRows = basketProducts.filter((item) => item.pinEnabled !== false);
+    const rowsToFetch = (selectedRows.length ? selectedRows : basketProducts).slice(0, 200);
+    const links = rowsToFetch.map((item) => item.url).filter(Boolean);
+    if (!links.length && !rowsToFetch.length) {
       setError('กรุณาวางลิงก์สินค้า Shopee ก่อนกดดึงอันดับจอ');
       return;
     }
 
-    const itemsToFetch = basketProducts
+    const itemsToFetch = rowsToFetch
       .filter((item) => item.itemId)
       .map((item) => ({
         shop_id: item.shopId ?? 0,
@@ -895,13 +897,7 @@ const syncBasketProductRows = async () => {
         const ranking = (row.shopId && row.itemId ? rankByKey.get(`${row.shopId}:${row.itemId}`) : undefined)
           || (row.url ? rankByUrl.get(row.url) : undefined);
         if (!ranking) {
-          return {
-            ...row,
-            pinOrder: index + 1,
-            screenRank: null,
-            screenRankLabel: 'ไม่พบข้อมูล',
-            screenRankingError: 'Shopee ไม่คืนข้อมูลอันดับจอของสินค้านี้',
-          };
+          return { ...row, pinOrder: index + 1 };
         }
         return {
           ...row,
@@ -924,7 +920,7 @@ const syncBasketProductRows = async () => {
       setBasketLinks(nextRows.map((item) => item.url).filter(Boolean).join('\n'));
       const matched = result.items.filter((item) => item.matched).length;
       const failed = result.items.filter((item) => item.error).length;
-      setError(failed ? `เช็กอันดับจอเสร็จแล้ว แต่มี ${failed} รายการที่เช็กไม่ได้` : `ดึงอันดับจอสำเร็จ พบสินค้าติดจอ ${matched}/${result.items.length} รายการ`);
+      setError(failed ? `เช็กอันดับจอเสร็จแล้ว แต่มี ${failed} รายการที่เช็กไม่ได้` : `ดึงอันดับจอสำเร็จ ติดจอ ${matched}/${result.items.length} รายการ`);
     } catch (error) {
       setError(error instanceof Error ? error.message : 'ดึงอันดับจอไม่สำเร็จ');
     } finally {
